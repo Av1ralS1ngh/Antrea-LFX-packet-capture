@@ -1,0 +1,95 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: capture-controller
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: capture-controller
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: capture-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: capture-controller
+subjects:
+  - kind: ServiceAccount
+    name: capture-controller
+    namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: capture-controller
+  namespace: kube-system
+  labels:
+    app: capture-controller
+spec:
+  selector:
+    matchLabels:
+      app: capture-controller
+  template:
+    metadata:
+      labels:
+        app: capture-controller
+    spec:
+      hostPID: true
+      serviceAccountName: capture-controller
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: controller
+          image: capture-controller:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: false
+            capabilities:
+              add:
+                [
+                  "NET_ADMIN",
+                  "NET_RAW",
+                  "SYS_ADMIN",
+                  "SYS_PTRACE",
+                  "DAC_READ_SEARCH",
+                ]
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: captures
+              mountPath: /captures
+            - name: proc
+              mountPath: /proc
+              readOnly: false # nsenter might need write access to /proc? no, usually read.
+            - name: run-containerd
+              mountPath: /run/containerd
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: captures
+          emptyDir: {}
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: run-containerd
+          hostPath:
+            path: /run/containerd

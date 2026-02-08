@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: traffic-generator
+  namespace: default
+spec:
+  containers:
+    - name: traffic
+      image: curlimages/curl:latest
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          while true; do
+            curl -s http://example.com > /dev/null
+            sleep 1
+          done

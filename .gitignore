@@ -1,0 +1,9 @@
+# Binaries
+bin/
+
+# Debug logs
+*.txt
+*.pcap*
+
+# OS files
+.DS_Store
