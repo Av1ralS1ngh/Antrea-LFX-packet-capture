@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"k8s.io/klog/v2"
 )
@@ -111,6 +112,7 @@ func (pm *ProcessManager) processQueue() {
 		// Wait until we have capacity
 		for running >= pm.maxConcurrent {
 			// Simple polling - in production you'd use a semaphore
+			time.Sleep(100 * time.Millisecond)
 			pm.mu.Lock()
 			running = len(pm.captures)
 			pm.mu.Unlock()

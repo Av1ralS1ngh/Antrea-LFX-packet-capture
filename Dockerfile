@@ -5,7 +5,7 @@ LABEL maintainer="Aviral Singh <aviral_s@mt.iitr.ac.in>"
 LABEL description="Packet Capture Controller for Antrea LFX Mentorship"
 
 ARG CRICTL_VERSION="v1.29.0"
-ARG TARGETARCH=arm64
+ARG TARGETARCH
 
 # Install required packages (--allow-releaseinfo-change for clock skew issues)
 RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false update && \
@@ -13,12 +13,16 @@ RUN apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false upd
     tcpdump \
     bash \
     util-linux \
+    procps \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install crictl
-RUN curl -L https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-${TARGETARCH}.tar.gz -o crictl.tar.gz && \
+RUN ARCH="$(dpkg --print-architecture)"; \
+    if [ -n "${TARGETARCH}" ]; then ARCH="${TARGETARCH}"; fi; \
+    case "${ARCH}" in amd64|arm64) ;; *) echo "Unsupported arch: ${ARCH}"; exit 1;; esac; \
+    curl -L https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-${ARCH}.tar.gz -o crictl.tar.gz && \
     tar -xzf crictl.tar.gz -C /usr/local/bin && \
     rm crictl.tar.gz && \
     chmod +x /usr/local/bin/crictl

@@ -1,6 +1,6 @@
 # Antrea LFX Packet Capture Controller
 
-A Kubernetes admission controller that performs on-demand packet capture on Pods using `tcpdump`. Developed as part of the LFX Mentorship 2026_01 task.
+A Kubernetes controller that performs on-demand packet capture on Pods using `tcpdump`. Developed as part of the LFX Mentorship 2026_01 task.
 
 ## Overview
 
