@@ -97,6 +97,19 @@ This controller watches `PacketCapture` custom resources and starts a packet cap
 - **Unit Tests**: `make test`
 - **Build Docker Image**: `make docker-build`
 
+## Automated E2E Testing
+
+The `make e2e` target creates a Kind cluster, deploys the controller, starts a capture, generates traffic, downloads the PCAP, and verifies it contains more than 0 packets.
+
+```bash
+make e2e
+```
+
+Optional environment variables:
+
+- `CLUSTER_NAME`: Kind cluster name (default: `capture-test`)
+- `KIND_CONFIG`: Kind config file path (defaults to Kind's built-in config)
+
 ## Architecture
 
 - **Controller**: Watches Pod events.

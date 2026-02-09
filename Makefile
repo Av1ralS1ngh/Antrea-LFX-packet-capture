@@ -1,8 +1,9 @@
-.PHONY: build clean docker-build
+.PHONY: build clean docker-build kind-load deploy test e2e
  
 BINARY_NAME=capture-controller
 IMAGE_NAME=capture-controller
 IMAGE_TAG=latest
+CLUSTER_NAME?=capture-test
  
 build:
 	CGO_ENABLED=0 GOOS=linux go build -o bin/$(BINARY_NAME) ./cmd/capture-controller
@@ -14,7 +15,7 @@ docker-build: build
 	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .
  
 kind-load: docker-build
-	kind load docker-image $(IMAGE_NAME):$(IMAGE_TAG) --name capture-test
+	kind load docker-image $(IMAGE_NAME):$(IMAGE_TAG) --name $(CLUSTER_NAME)
  
 deploy: kind-load
 	kubectl apply -f deploy/daemonset.yaml
@@ -24,3 +25,6 @@ deploy: kind-load
  
 test:
 	go test -v ./...
+
+e2e:
+	./scripts/e2e.sh

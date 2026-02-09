@@ -190,9 +190,12 @@ func (pm *ProcessManager) StopCapture(key string) {
 	}
 	capture.cancel()
 	capture.releaseOnce.Do(capture.release)
+}
 
-	// Clean up pcap files
-	pm.cleanupFiles(capture.filePattern)
+// CleanupCaptureFilesForCapture removes pcap files for a PacketCapture name.
+func (pm *ProcessManager) CleanupCaptureFilesForCapture(captureName string) {
+	pattern := filepath.Join(pm.captureDir, fmt.Sprintf("capture-%s-*.pcap*", captureName))
+	pm.cleanupFiles(pattern)
 }
 
 func (pm *ProcessManager) tryAcquire(ctx context.Context) error {

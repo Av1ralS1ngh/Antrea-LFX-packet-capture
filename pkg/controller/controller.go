@@ -280,7 +280,6 @@ func (c *Controller) syncPacketCapture(ctx context.Context, key string) error {
 	}
 
 	if pc.Status.Phase == PhaseCompleted {
-		c.cleanupCapture(key)
 		return nil
 	}
 
@@ -477,6 +476,14 @@ func (c *Controller) cleanupCapture(captureKey string) {
 	for podKey := range pods {
 		c.stopCapture(podKey, "", "")
 	}
+
+	_, name, err := cache.SplitMetaNamespaceKey(captureKey)
+	if err != nil {
+		klog.ErrorS(err, "Failed to parse PacketCapture key", "key", captureKey)
+		return
+	}
+
+	c.processManager.CleanupCaptureFilesForCapture(name)
 }
 
 func (c *Controller) captureFileLocation(captureName, podName string) string {
