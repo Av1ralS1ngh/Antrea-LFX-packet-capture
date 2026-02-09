@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -50,6 +51,7 @@ var packetCaptureGVR = schema.GroupVersionResource{
 type CaptureState struct {
 	captureKey  string
 	fileLocation string
+	filePattern  string
 	timeout     time.Duration
 	stopTimer   *time.Timer
 }
@@ -396,6 +398,7 @@ func (c *Controller) startCapture(ctx context.Context, captureKey string, pc *pa
 	state := &CaptureState{
 		captureKey:   captureKey,
 		fileLocation: fileLocation,
+		filePattern:  c.captureFilePattern(pc.Name, pod.Name),
 		timeout:      pc.Spec.Timeout.Duration,
 	}
 	if state.timeout > 0 {
@@ -462,7 +465,7 @@ func (c *Controller) stopCapture(podKey, phase, message string) {
 
 	status := packetcapture.PacketCaptureStatus{
 		Phase:        phase,
-		FileLocation: state.fileLocation,
+		FileLocation: c.latestCaptureFile(state.filePattern, state.fileLocation),
 		Message:      message,
 		NodeName:     c.nodeName,
 	}
@@ -488,6 +491,10 @@ func (c *Controller) cleanupCapture(captureKey string) {
 
 func (c *Controller) captureFileLocation(captureName, podName string) string {
 	return filepath.Join(c.captureDir, fmt.Sprintf("capture-%s-%s.pcap", captureName, podName))
+}
+
+func (c *Controller) captureFilePattern(captureName, podName string) string {
+	return filepath.Join(c.captureDir, fmt.Sprintf("capture-%s-%s.pcap*", captureName, podName))
 }
 
 func (c *Controller) packetCaptureFromObject(obj interface{}) (*packetcapture.PacketCapture, *unstructured.Unstructured, error) {
@@ -544,10 +551,34 @@ func (c *Controller) firstFileLocationForCapture(captureKey string) string {
 	defer c.mu.Unlock()
 	for podKey := range c.capturePods[captureKey] {
 		if state := c.activeCaptures[podKey]; state != nil {
-			return state.fileLocation
+			return c.latestCaptureFile(state.filePattern, state.fileLocation)
 		}
 	}
 	return ""
+}
+
+func (c *Controller) latestCaptureFile(pattern, fallback string) string {
+	files, err := filepath.Glob(pattern)
+	if err != nil || len(files) == 0 {
+		return fallback
+	}
+
+	latest := ""
+	latestTime := time.Time{}
+	for _, file := range files {
+		info, err := os.Stat(file)
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(latestTime) {
+			latestTime = info.ModTime()
+			latest = file
+		}
+	}
+	if latest == "" {
+		return fallback
+	}
+	return latest
 }
 
 func (c *Controller) ensurePacketCaptureStatus(ctx context.Context, key string, current, desired packetcapture.PacketCaptureStatus) error {
@@ -582,6 +613,9 @@ func (c *Controller) updatePacketCaptureStatus(ctx context.Context, key string, 
 		current := &packetcapture.PacketCapture{}
 		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, current); err != nil {
 			return err
+		}
+		if current.Status.NodeName != "" && current.Status.NodeName != c.nodeName {
+			return nil
 		}
 		if statusEqual(current.Status, status) {
 			return nil
