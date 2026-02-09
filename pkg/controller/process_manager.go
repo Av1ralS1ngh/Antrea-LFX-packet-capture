@@ -56,12 +56,12 @@ func NewProcessManager(maxConcurrent int, captureDir, criSocket string) *Process
 }
 
 // StartCapture queues a capture request
-func (pm *ProcessManager) StartCapture(ctx context.Context, key, captureName, podName, containerID string, maxFiles int) error {
+func (pm *ProcessManager) StartCapture(ctx context.Context, key, podName, containerID string, maxFiles int) error {
 	if err := pm.tryAcquire(ctx); err != nil {
 		return err
 	}
 
-	err := pm.doStartCapture(ctx, key, captureName, podName, containerID, maxFiles)
+	err := pm.doStartCapture(ctx, key, podName, containerID, maxFiles)
 	if err != nil {
 		pm.releaseSlot()
 		return err
@@ -71,7 +71,7 @@ func (pm *ProcessManager) StartCapture(ctx context.Context, key, captureName, po
 }
 
 // doStartCapture actually starts the tcpdump process
-func (pm *ProcessManager) doStartCapture(ctx context.Context, key, captureName, podName, containerID string, maxFiles int) error {
+func (pm *ProcessManager) doStartCapture(ctx context.Context, key, podName, containerID string, maxFiles int) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
@@ -90,8 +90,8 @@ func (pm *ProcessManager) doStartCapture(ctx context.Context, key, captureName, 
 	captureCtx, cancel := context.WithCancel(ctx)
 
 	// Build tcpdump command with nsenter
-	outputFile := filepath.Join(pm.captureDir, fmt.Sprintf("capture-%s-%s.pcap", captureName, podName))
-	filePattern := filepath.Join(pm.captureDir, fmt.Sprintf("capture-%s-%s.pcap*", captureName, podName))
+	outputFile := filepath.Join(pm.captureDir, fmt.Sprintf("capture-%s.pcap", podName))
+	filePattern := filepath.Join(pm.captureDir, fmt.Sprintf("capture-%s.pcap*", podName))
 
 	// Use nsenter to enter the container's network namespace
 	cmd := exec.CommandContext(captureCtx,
@@ -103,6 +103,7 @@ func (pm *ProcessManager) doStartCapture(ctx context.Context, key, captureName, 
 		"-W", fmt.Sprintf("%d", maxFiles), // max files
 		"-w", outputFile,
 		"-i", "eth0",
+		"-Z", "root",
 	)
 
 	// Set process group to ensure we can kill children (tcpdump)
@@ -119,9 +120,9 @@ func (pm *ProcessManager) doStartCapture(ctx context.Context, key, captureName, 
 	}
 
 	pm.captures[key] = &CaptureProcess{
-		cmd:     cmd,
-		cancel:  cancel,
-		release: pm.releaseSlot,
+		cmd:         cmd,
+		cancel:      cancel,
+		release:     pm.releaseSlot,
 		filePattern: filePattern,
 	}
 
@@ -192,9 +193,8 @@ func (pm *ProcessManager) StopCapture(key string) {
 	capture.releaseOnce.Do(capture.release)
 }
 
-// CleanupCaptureFilesForCapture removes pcap files for a PacketCapture name.
-func (pm *ProcessManager) CleanupCaptureFilesForCapture(captureName string) {
-	pattern := filepath.Join(pm.captureDir, fmt.Sprintf("capture-%s-*.pcap*", captureName))
+// CleanupCaptureFilesForPod removes pcap files for a Pod.
+func (pm *ProcessManager) CleanupCaptureFilesForPod(pattern string) {
 	pm.cleanupFiles(pattern)
 }
 

@@ -24,7 +24,7 @@ func TestProcessManager_StartCapture_Queue(t *testing.T) {
 
 	// This should fail because getContainerPID returns error
 	// But it proves StartCapture attempts PID lookup
-	err := pm.StartCapture(ctx, "test/pod", "capture", "pod", "docker://123", 3)
+	err := pm.StartCapture(ctx, "test/pod", "pod", "docker://123", 3)
 
 	if err == nil {
 		t.Error("Expected error from mock getContainerPID")

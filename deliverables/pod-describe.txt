@@ -5,7 +5,7 @@ Service Account:  default
 Node:             capture-test-worker/172.18.0.3
 Start Time:       Mon, 09 Feb 2026 02:17:51 +0530
 Labels:           app=database
-Annotations:      <none>
+Annotations:      tcpdump.antrea.io: 5
 Status:           Running
 IP:               10.244.2.3
 IPs:

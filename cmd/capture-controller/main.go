@@ -3,16 +3,10 @@ package main
 import (
 	"context"
 	"flag"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -27,12 +21,10 @@ func main() {
 		criSocket     string
 		captureDir    string
 		maxConcurrent int
-		httpAddr      string
 	)
 	flag.StringVar(&criSocket, "cri-socket", "", "Path to CRI socket (auto-detected if empty)")
-	flag.StringVar(&captureDir, "capture-dir", "/captures", "Directory to store pcap files")
+	flag.StringVar(&captureDir, "capture-dir", "/", "Directory to store pcap files")
 	flag.IntVar(&maxConcurrent, "max-concurrent", 5, "Maximum concurrent captures")
-	flag.StringVar(&httpAddr, "http-addr", "0.0.0.0:8090", "HTTP listen address for pcap downloads (empty to disable)")
 
 	klog.InitFlags(nil)
 	flag.Parse()
@@ -83,24 +75,13 @@ func main() {
 		klog.Fatalf("Failed to create Kubernetes client: %v", err)
 	}
 
-	dynamicClient, err := dynamic.NewForConfig(config)
-	if err != nil {
-		klog.Fatalf("Failed to create dynamic Kubernetes client: %v", err)
-	}
-
 	// Create shared informer factory (cluster-wide Pod watch)
 	informerFactory := informers.NewSharedInformerFactory(clientset, 0)
 	podInformer := informerFactory.Core().V1().Pods()
 
-	pcGVR := schema.GroupVersionResource{Group: "antrea.io", Version: "v1alpha1", Resource: "packetcaptures"}
-	pcInformerFactory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(dynamicClient, 0, v1.NamespaceAll, nil)
-	pcInformer := pcInformerFactory.ForResource(pcGVR).Informer()
-
 	// Create the controller
 	ctrl := controller.NewController(
-		dynamicClient,
 		podInformer,
-		pcInformer,
 		nodeName,
 		criSocket,
 		captureDir,
@@ -124,44 +105,9 @@ func main() {
 
 	// Start informers
 	informerFactory.Start(ctx.Done())
-	pcInformerFactory.Start(ctx.Done())
-
-	if httpAddr != "" {
-		go startHTTPServer(ctx, httpAddr, captureDir)
-	}
 
 	// Run the controller
 	if err := ctrl.Run(ctx, 2); err != nil {
 		klog.Fatalf("Error running controller: %v", err)
-	}
-}
-
-func startHTTPServer(ctx context.Context, addr, captureDir string) {
-	mux := http.NewServeMux()
-	mux.Handle("/captures/", http.StripPrefix("/captures/", http.FileServer(http.Dir(captureDir))))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-
-	server := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
-	}()
-
-	klog.InfoS("Starting HTTP server", "addr", addr, "captureDir", captureDir)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		klog.ErrorS(err, "HTTP server failed", "addr", addr)
 	}
 }

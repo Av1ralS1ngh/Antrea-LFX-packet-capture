@@ -4,16 +4,12 @@ A Kubernetes controller that performs on-demand packet capture on Pods using `tc
 
 ## Overview
 
-This controller watches `PacketCapture` custom resources and starts a packet capture on matching Pods' `eth0` interfaces. The captures are stored in the controller's container.
-
-Design note: I intentionally implemented capture triggers using a CRD rather than Pod annotations to support better validation, status reporting, and lifecycle management, which are best practices for Kubernetes controllers.
+This controller watches Pod annotations and starts a packet capture on matching Pods' `eth0` interfaces. The captures are stored on the node in files named `/capture-<pod>.pcap` (with rotation if `-C/-W` is used).
 
 ### Features
 
-- **On-demand Capture**: Triggered by creating a `PacketCapture` custom resource.
-- **Timed Captures**: Stop captures automatically after the configured `spec.timeout`.
-- **Stable Status**: Status updates are owned by the node running the capture to avoid cross-node overwrites.
-- **Automatic Cleanup**: Stops the capture process and removes pcap files when the `PacketCapture` is removed.
+- **On-demand Capture**: Triggered by Pod annotation `tcpdump.antrea.io: "<N>"`.
+- **Automatic Cleanup**: Stops the capture process and removes pcap files when the annotation is removed.
 - **Resource Management**: Uses a bounded worker queue to limit concurrent captures.
 - **Containerized**: Runs as a DaemonSet for node-local captures.
 
@@ -49,48 +45,24 @@ Design note: I intentionally implemented capture triggers using a CRD rather tha
    ```
 
 2. **Start Capture**
-   Apply the CRD and create a PacketCapture resource:
+   Annotate the Pod with the required key and max file count:
 
    ```bash
-   kubectl apply -f deploy/packetcapture-crd.yaml
-   kubectl apply -f deploy/packetcapture.yaml
+   kubectl annotate pod traffic-generator tcpdump.antrea.io="5"
    ```
 
 3. **Verify Capture**
-   Check the controller logs:
-
-   ```bash
-   kubectl logs -n kube-system -l app=capture-controller
-   ```
-
-   Check PacketCapture status:
-
-   ```bash
-   kubectl get packetcaptures
-   kubectl describe packetcapture capture-db-traffic
-   ```
-
-   The status includes the node name that owns the capture updates.
-
    Check generated files in the controller pod:
 
    ```bash
-   kubectl exec -n kube-system <controller-pod-name> -- ls -l /captures
+   kubectl exec -n kube-system <controller-pod-name> -- ls -l /capture-*
    ```
 
 4. **Stop Capture**
-   Delete the PacketCapture:
-   ```bash
-   kubectl delete packetcapture capture-db-traffic
-   ```
-
-5. **Download Capture**
-   The controller exposes a simple HTTP server for downloading files.
+   Remove the annotation:
 
    ```bash
-   kubectl proxy &
-   kubectl get pods -n kube-system -l app=capture-controller
-   curl -o capture.pcap "http://127.0.0.1:8001/api/v1/namespaces/kube-system/pods/<controller-pod-name>:8090/proxy/captures/capture-<packetcapture-name>-<pod-name>.pcap"
+   kubectl annotate pod traffic-generator tcpdump.antrea.io-
    ```
 
 ## Development
@@ -101,7 +73,7 @@ Design note: I intentionally implemented capture triggers using a CRD rather tha
 
 ## Automated E2E Testing
 
-The `make e2e` target creates a Kind cluster, deploys the controller, starts a capture, generates traffic, downloads the PCAP, and verifies it contains more than 0 packets.
+The `make e2e` target creates a Kind cluster, deploys the controller, starts a capture via annotation, generates traffic, and verifies it contains more than 0 packets.
 
 ```bash
 make e2e
@@ -114,7 +86,7 @@ Optional environment variables:
 
 ## Architecture
 
-- **Controller**: Watches Pod events.
+- **Controller**: Watches Pod events and reacts to the `tcpdump.antrea.io` annotation.
 - **ProcessManager**: Manages `tcpdump` processes using `nsenter` to access Pod network namespaces.
 - **Host Access**: Uses `hostPID: true` and mounts `/run/containerd/containerd.sock` to resolve container PIDs via `crictl`.
 
