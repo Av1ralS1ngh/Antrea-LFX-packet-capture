@@ -6,6 +6,8 @@ A Kubernetes controller that performs on-demand packet capture on Pods using `tc
 
 This controller watches `PacketCapture` custom resources and starts a packet capture on matching Pods' `eth0` interfaces. The captures are stored in the controller's container.
 
+Design note: I intentionally implemented capture triggers using a CRD rather than Pod annotations to support better validation, status reporting, and lifecycle management, which are best practices for Kubernetes controllers.
+
 ### Features
 
 - **On-demand Capture**: Triggered by creating a `PacketCapture` custom resource.

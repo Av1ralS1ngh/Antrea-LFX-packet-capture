@@ -1,0 +1,59 @@
+Name:             traffic-generator
+Namespace:        default
+Priority:         0
+Service Account:  default
+Node:             capture-test-worker/172.18.0.3
+Start Time:       Mon, 09 Feb 2026 02:17:51 +0530
+Labels:           app=database
+Annotations:      <none>
+Status:           Running
+IP:               10.244.2.3
+IPs:
+  IP:  10.244.2.3
+Containers:
+  traffic:
+    Container ID:  containerd://a4e5a21e08a9ddddd46ac729896ae50ba7fc95168ceea88b8ac361b16667df6f
+    Image:         curlimages/curl:latest
+    Image ID:      docker.io/curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      /bin/sh
+      -c
+    Args:
+      while true; do
+        curl -s http://example.com > /dev/null
+        sleep 1
+      done
+      
+    State:          Running
+      Started:      Mon, 09 Feb 2026 21:30:00 +0530
+    Last State:     Terminated
+      Reason:       Unknown
+      Exit Code:    255
+      Started:      Mon, 09 Feb 2026 02:18:02 +0530
+      Finished:     Mon, 09 Feb 2026 21:29:33 +0530
+    Ready:          True
+    Restart Count:  1
+    Environment:    <none>
+    Mounts:
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-pxmbx (ro)
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True 
+  Initialized                 True 
+  Ready                       True 
+  ContainersReady             True 
+  PodScheduled                True 
+Volumes:
+  kube-api-access-pxmbx:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    Optional:                false
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:                      <none>

@@ -5,5 +5,10 @@ bin/
 *.txt
 *.pcap*
 
+# Keep required deliverables tracked
+!deliverables/*.txt
+!deliverables/*.pcap
+!deliverables/*.pcap*
+
 # OS files
 .DS_Store
