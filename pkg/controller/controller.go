@@ -2,13 +2,14 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/wait"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
@@ -209,7 +210,7 @@ func (c *Controller) syncPod(ctx context.Context, key string) error {
 	}
 
 	pod, err := c.podLister.Pods(namespace).Get(name)
-	if errors.IsNotFound(err) {
+	if k8serrors.IsNotFound(err) {
 		// Pod was deleted, stop any active capture
 		klog.V(2).InfoS("Pod not found, cleaning up", "key", key)
 		c.stopCapture(key)
@@ -280,6 +281,11 @@ func (c *Controller) startCapture(ctx context.Context, pod *corev1.Pod, maxFiles
 	// Start capture via process manager
 	err := c.processManager.StartCapture(ctx, key, pod.Name, containerID, maxFiles)
 	if err != nil {
+		if errors.Is(err, ErrMaxConcurrent) {
+			klog.InfoS("Max concurrent captures reached, retrying later", "pod", key)
+			c.queue.AddAfter(key, 2*time.Second)
+			return nil
+		}
 		return fmt.Errorf("failed to start capture: %w", err)
 	}
 

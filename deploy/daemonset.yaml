@@ -73,9 +73,12 @@ spec:
               mountPath: /captures
             - name: proc
               mountPath: /proc
-              readOnly: false # nsenter might need write access to /proc? no, usually read.
+              readOnly: true
             - name: run-containerd
               mountPath: /run/containerd
+              readOnly: true
+            - name: run-crio
+              mountPath: /run/crio
               readOnly: true
           resources:
             requests:
@@ -93,3 +96,7 @@ spec:
         - name: run-containerd
           hostPath:
             path: /run/containerd
+        - name: run-crio
+          hostPath:
+            path: /run/crio
+            type: DirectoryOrCreate

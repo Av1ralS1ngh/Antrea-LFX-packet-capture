@@ -8,9 +8,6 @@ import (
 )
 
 func TestProcessManager_StartCapture_Queue(t *testing.T) {
-	// Use a buffered channel to mock async execution
-	done := make(chan struct{})
-	
 	// Mock getContainerPID to verify it's called
 	originalGetPID := getContainerPID
 	defer func() { getContainerPID = originalGetPID }()
@@ -26,16 +23,14 @@ func TestProcessManager_StartCapture_Queue(t *testing.T) {
 	defer cancel()
 
 	// This should fail because getContainerPID returns error
-	// But it proves the queue picked up the item
+	// But it proves StartCapture attempts PID lookup
 	err := pm.StartCapture(ctx, "test/pod", "pod", "docker://123", 3)
-	
+
 	if err == nil {
 		t.Error("Expected error from mock getContainerPID")
 	}
-	
+
 	if !called {
 		t.Error("create capture should have called getContainerPID")
 	}
-
-	close(done)
 }

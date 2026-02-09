@@ -3,15 +3,14 @@ package controller
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"k8s.io/klog/v2"
 )
@@ -21,122 +20,53 @@ type ProcessManager struct {
 	mu            sync.Mutex
 	captures      map[string]*CaptureProcess
 	maxConcurrent int
-	queue         chan *CaptureRequest
+	semaphore     chan struct{}
 	captureDir    string
 	criSocket     string
 }
 
 // CaptureProcess tracks a running tcpdump process
 type CaptureProcess struct {
-	cmd    *exec.Cmd
-	cancel context.CancelFunc
+	cmd         *exec.Cmd
+	cancel      context.CancelFunc
+	release     func()
+	releaseOnce sync.Once
 }
 
-// CaptureRequest represents a pending capture request
-type CaptureRequest struct {
-	Key         string
-	PodName     string
-	ContainerID string
-	MaxFiles    int
-	Ctx         context.Context
-	ResultCh    chan error
-}
+// ErrMaxConcurrent indicates the capture limit was reached.
+var ErrMaxConcurrent = errors.New("max concurrent captures reached")
 
 // NewProcessManager creates a new process manager
 func NewProcessManager(maxConcurrent int, captureDir, criSocket string) *ProcessManager {
 	pm := &ProcessManager{
 		captures:      make(map[string]*CaptureProcess),
 		maxConcurrent: maxConcurrent,
-		queue:         make(chan *CaptureRequest, 100),
+		semaphore:     make(chan struct{}, maxConcurrent),
 		captureDir:    captureDir,
 		criSocket:     criSocket,
 	}
-	
+
 	// Ensure capture directory exists
 	if err := os.MkdirAll(captureDir, 0755); err != nil {
 		klog.ErrorS(err, "Failed to create capture directory", "dir", captureDir)
 	}
-	
-	// Cleanup any orphaned tcpdump processes from previous runs
-	pm.cleanupOrphanedCaptures()
 
-	// Start queue processor
-	go pm.processQueue()
 	return pm
-}
-
-// cleanupOrphanedCaptures finds and kills any running tcpdump processes associated with this controller
-func (pm *ProcessManager) cleanupOrphanedCaptures() {
-	// Simple cleanup: kill all tcpdump processes managed by nsenter
-	// A more robust approach would be to label processes, but tcpdump arg matching works for now
-	// We look for "tcpdump -C ... -w <captureDir>/..."
-	
-	klog.InfoS("Cleaning up orphaned capture processes", "dir", pm.captureDir)
-	
-	// Use pgrep to find pids of tcpdump writing to our capture dir
-	// escapes for regex? pm.captureDir might contain special chars. 
-	// For simplicity, we just assume standard paths without regex special chars or we quote it?
-	// pgrep -f matches the full command line.
-	cmd := exec.Command("pgrep", "-f", fmt.Sprintf("tcpdump.*%s", pm.captureDir))
-	output, err := cmd.Output()
-	if err != nil {
-		// No processes found (exit code 1) or other error
-		return
-	}
-	
-	pids := strings.Fields(string(output))
-	for _, pidStr := range pids {
-		pid, err := strconv.Atoi(pidStr)
-		if err != nil {
-			continue
-		}
-		
-		proc, err := os.FindProcess(pid)
-		if err != nil {
-			continue
-		}
-		
-		klog.InfoS("Killing orphaned tcpdump", "pid", pid)
-		proc.Kill()
-		proc.Wait() // release resources
-	}
-}
-
-// processQueue processes capture requests from the queue
-func (pm *ProcessManager) processQueue() {
-	for req := range pm.queue {
-		pm.mu.Lock()
-		running := len(pm.captures)
-		pm.mu.Unlock()
-
-		// Wait until we have capacity
-		for running >= pm.maxConcurrent {
-			// Simple polling - in production you'd use a semaphore
-			time.Sleep(100 * time.Millisecond)
-			pm.mu.Lock()
-			running = len(pm.captures)
-			pm.mu.Unlock()
-		}
-
-		err := pm.doStartCapture(req.Ctx, req.Key, req.PodName, req.ContainerID, req.MaxFiles)
-		if req.ResultCh != nil {
-			req.ResultCh <- err
-		}
-	}
 }
 
 // StartCapture queues a capture request
 func (pm *ProcessManager) StartCapture(ctx context.Context, key, podName, containerID string, maxFiles int) error {
-	resultCh := make(chan error, 1)
-	pm.queue <- &CaptureRequest{
-		Key:         key,
-		PodName:     podName,
-		ContainerID: containerID,
-		MaxFiles:    maxFiles,
-		Ctx:         ctx,
-		ResultCh:    resultCh,
+	if err := pm.tryAcquire(ctx); err != nil {
+		return err
 	}
-	return <-resultCh
+
+	err := pm.doStartCapture(ctx, key, podName, containerID, maxFiles)
+	if err != nil {
+		pm.releaseSlot()
+		return err
+	}
+
+	return nil
 }
 
 // doStartCapture actually starts the tcpdump process
@@ -160,14 +90,14 @@ func (pm *ProcessManager) doStartCapture(ctx context.Context, key, podName, cont
 
 	// Build tcpdump command with nsenter
 	outputFile := filepath.Join(pm.captureDir, fmt.Sprintf("capture-%s.pcap", podName))
-	
+
 	// Use nsenter to enter the container's network namespace
 	cmd := exec.CommandContext(captureCtx,
 		"nsenter",
 		"--net="+fmt.Sprintf("/proc/%d/ns/net", pid),
 		"--",
 		"tcpdump",
-		"-C", "1",           // 1MB file size
+		"-C", "1", // 1MB file size
 		"-W", fmt.Sprintf("%d", maxFiles), // max files
 		"-w", outputFile,
 		"-i", "eth0",
@@ -187,8 +117,9 @@ func (pm *ProcessManager) doStartCapture(ctx context.Context, key, podName, cont
 	}
 
 	pm.captures[key] = &CaptureProcess{
-		cmd:    cmd,
-		cancel: cancel,
+		cmd:     cmd,
+		cancel:  cancel,
+		release: pm.releaseSlot,
 	}
 
 	RecordCaptureStart(nil)
@@ -219,11 +150,16 @@ func (pm *ProcessManager) monitorProcess(key string, cmd *exec.Cmd, cancel conte
 	}
 
 	pm.mu.Lock()
-	if _, exists := pm.captures[key]; exists {
+	capture, exists := pm.captures[key]
+	if exists {
 		delete(pm.captures, key)
 		RecordCaptureActive(-1)
 	}
 	pm.mu.Unlock()
+
+	if exists {
+		capture.releaseOnce.Do(capture.release)
+	}
 
 	cancel()
 }
@@ -248,12 +184,30 @@ func (pm *ProcessManager) StopCapture(key string) {
 	if capture.cmd.Process != nil {
 		// Kill the entire process group
 		syscall.Kill(-capture.cmd.Process.Pid, syscall.SIGKILL)
-		capture.cmd.Process.Wait()
 	}
 	capture.cancel()
+	capture.releaseOnce.Do(capture.release)
 
 	// Clean up pcap files
 	pm.cleanupFiles(key)
+}
+
+func (pm *ProcessManager) tryAcquire(ctx context.Context) error {
+	select {
+	case pm.semaphore <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return ErrMaxConcurrent
+	}
+}
+
+func (pm *ProcessManager) releaseSlot() {
+	select {
+	case <-pm.semaphore:
+	default:
+	}
 }
 
 // cleanupFiles removes all pcap files for a Pod
@@ -293,7 +247,7 @@ var getContainerPID = func(containerID, criSocket string) (int, error) {
 
 	var cmd *exec.Cmd
 	switch runtime {
-	case "containerd":
+	case "containerd", "cri-o", "crio":
 		// Use crictl to get PID, specifying the socket if provided
 		args := []string{"inspect", "--output", "go-template", "--template", "{{.info.pid}}", id}
 		if criSocket != "" {
