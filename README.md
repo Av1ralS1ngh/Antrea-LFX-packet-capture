@@ -82,6 +82,15 @@ This controller watches `PacketCapture` custom resources and starts a packet cap
    kubectl delete packetcapture capture-db-traffic
    ```
 
+5. **Download Capture**
+   The controller exposes a simple HTTP server for downloading files.
+
+   ```bash
+   kubectl proxy &
+   kubectl get pods -n kube-system -l app=capture-controller
+   curl -o capture.pcap "http://127.0.0.1:8001/api/v1/namespaces/kube-system/pods/<controller-pod-name>:8090/proxy/captures/capture-<packetcapture-name>-<pod-name>.pcap"
+   ```
+
 ## Development
 
 - **Build Binary**: `make build`
