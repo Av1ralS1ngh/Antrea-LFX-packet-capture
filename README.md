@@ -4,13 +4,14 @@ A Kubernetes controller that performs on-demand packet capture on Pods using `tc
 
 ## Overview
 
-This controller watches for Pods with the annotation `tcpdump.antrea.io=<max-files>` and starts a packet capture on the Pod's `eth0` interface. The captures are stored in the controller's container.
+This controller watches `PacketCapture` custom resources and starts a packet capture on matching Pods' `eth0` interfaces. The captures are stored in the controller's container.
 
 ### Features
 
-- **On-demand Capture**: Triggered by adding an annotation to a Pod.
-- **Dynamic Configuration**: Adjust the number of rotated files dynamically by updating the annotation value.
-- **Automatic Cleanup**: Stops the capture process and removes pcap files when the annotation is removed.
+- **On-demand Capture**: Triggered by creating a `PacketCapture` custom resource.
+- **Timed Captures**: Stop captures automatically after the configured `spec.timeout`.
+- **Stable Status**: Status updates are owned by the node running the capture to avoid cross-node overwrites.
+- **Automatic Cleanup**: Stops the capture process and removes pcap files when the `PacketCapture` is removed.
 - **Resource Management**: Uses a bounded worker queue to limit concurrent captures.
 - **Containerized**: Runs as a DaemonSet for node-local captures.
 
@@ -46,10 +47,11 @@ This controller watches for Pods with the annotation `tcpdump.antrea.io=<max-fil
    ```
 
 2. **Start Capture**
-   Annotate the Pod with the desired number of rotated files (e.g., 3 files of 1MB each):
+   Apply the CRD and create a PacketCapture resource:
 
    ```bash
-   kubectl annotate pod traffic-generator tcpdump.antrea.io=3
+   kubectl apply -f deploy/packetcapture-crd.yaml
+   kubectl apply -f deploy/packetcapture.yaml
    ```
 
 3. **Verify Capture**
@@ -59,23 +61,25 @@ This controller watches for Pods with the annotation `tcpdump.antrea.io=<max-fil
    kubectl logs -n kube-system -l app=capture-controller
    ```
 
+   Check PacketCapture status:
+
+   ```bash
+   kubectl get packetcaptures
+   kubectl describe packetcapture capture-db-traffic
+   ```
+
+   The status includes the node name that owns the capture updates.
+
    Check generated files in the controller pod:
 
    ```bash
    kubectl exec -n kube-system <controller-pod-name> -- ls -l /captures
    ```
 
-4. **Update Capture Config**
-   Change the max file limit:
-
+4. **Stop Capture**
+   Delete the PacketCapture:
    ```bash
-   kubectl annotate pod traffic-generator tcpdump.antrea.io=5 --overwrite
-   ```
-
-5. **Stop Capture**
-   Remove the annotation:
-   ```bash
-   kubectl annotate pod traffic-generator tcpdump.antrea.io-
+   kubectl delete packetcapture capture-db-traffic
    ```
 
 ## Development

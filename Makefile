@@ -18,7 +18,9 @@ kind-load: docker-build
  
 deploy: kind-load
 	kubectl apply -f deploy/daemonset.yaml
+	kubectl apply -f deploy/packetcapture-crd.yaml
 	kubectl apply -f deploy/test-pod.yaml
+	kubectl apply -f deploy/packetcapture.yaml
  
 test:
 	go test -v ./...

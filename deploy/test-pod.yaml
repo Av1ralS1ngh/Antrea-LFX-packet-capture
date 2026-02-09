@@ -3,6 +3,8 @@ kind: Pod
 metadata:
   name: traffic-generator
   namespace: default
+  labels:
+    app: database
 spec:
   containers:
     - name: traffic

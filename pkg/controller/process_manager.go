@@ -31,6 +31,7 @@ type CaptureProcess struct {
 	cancel      context.CancelFunc
 	release     func()
 	releaseOnce sync.Once
+	filePattern string
 }
 
 // ErrMaxConcurrent indicates the capture limit was reached.
@@ -55,12 +56,12 @@ func NewProcessManager(maxConcurrent int, captureDir, criSocket string) *Process
 }
 
 // StartCapture queues a capture request
-func (pm *ProcessManager) StartCapture(ctx context.Context, key, podName, containerID string, maxFiles int) error {
+func (pm *ProcessManager) StartCapture(ctx context.Context, key, captureName, podName, containerID string, maxFiles int) error {
 	if err := pm.tryAcquire(ctx); err != nil {
 		return err
 	}
 
-	err := pm.doStartCapture(ctx, key, podName, containerID, maxFiles)
+	err := pm.doStartCapture(ctx, key, captureName, podName, containerID, maxFiles)
 	if err != nil {
 		pm.releaseSlot()
 		return err
@@ -70,7 +71,7 @@ func (pm *ProcessManager) StartCapture(ctx context.Context, key, podName, contai
 }
 
 // doStartCapture actually starts the tcpdump process
-func (pm *ProcessManager) doStartCapture(ctx context.Context, key, podName, containerID string, maxFiles int) error {
+func (pm *ProcessManager) doStartCapture(ctx context.Context, key, captureName, podName, containerID string, maxFiles int) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
@@ -89,7 +90,8 @@ func (pm *ProcessManager) doStartCapture(ctx context.Context, key, podName, cont
 	captureCtx, cancel := context.WithCancel(ctx)
 
 	// Build tcpdump command with nsenter
-	outputFile := filepath.Join(pm.captureDir, fmt.Sprintf("capture-%s.pcap", podName))
+	outputFile := filepath.Join(pm.captureDir, fmt.Sprintf("capture-%s-%s.pcap", captureName, podName))
+	filePattern := filepath.Join(pm.captureDir, fmt.Sprintf("capture-%s-%s.pcap*", captureName, podName))
 
 	// Use nsenter to enter the container's network namespace
 	cmd := exec.CommandContext(captureCtx,
@@ -120,6 +122,7 @@ func (pm *ProcessManager) doStartCapture(ctx context.Context, key, podName, cont
 		cmd:     cmd,
 		cancel:  cancel,
 		release: pm.releaseSlot,
+		filePattern: filePattern,
 	}
 
 	RecordCaptureStart(nil)
@@ -189,7 +192,7 @@ func (pm *ProcessManager) StopCapture(key string) {
 	capture.releaseOnce.Do(capture.release)
 
 	// Clean up pcap files
-	pm.cleanupFiles(key)
+	pm.cleanupFiles(capture.filePattern)
 }
 
 func (pm *ProcessManager) tryAcquire(ctx context.Context) error {
@@ -211,15 +214,7 @@ func (pm *ProcessManager) releaseSlot() {
 }
 
 // cleanupFiles removes all pcap files for a Pod
-func (pm *ProcessManager) cleanupFiles(key string) {
-	// Extract pod name from key (namespace/name)
-	parts := strings.Split(key, "/")
-	if len(parts) != 2 {
-		return
-	}
-	podName := parts[1]
-
-	pattern := filepath.Join(pm.captureDir, fmt.Sprintf("capture-%s.pcap*", podName))
+func (pm *ProcessManager) cleanupFiles(pattern string) {
 	files, err := filepath.Glob(pattern)
 	if err != nil {
 		klog.ErrorS(err, "Failed to glob capture files", "pattern", pattern)

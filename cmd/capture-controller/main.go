@@ -7,6 +7,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -75,14 +79,24 @@ func main() {
 		klog.Fatalf("Failed to create Kubernetes client: %v", err)
 	}
 
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		klog.Fatalf("Failed to create dynamic Kubernetes client: %v", err)
+	}
+
 	// Create shared informer factory (cluster-wide Pod watch)
 	informerFactory := informers.NewSharedInformerFactory(clientset, 0)
 	podInformer := informerFactory.Core().V1().Pods()
 
+	pcGVR := schema.GroupVersionResource{Group: "antrea.io", Version: "v1alpha1", Resource: "packetcaptures"}
+	pcInformerFactory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(dynamicClient, 0, v1.NamespaceAll, nil)
+	pcInformer := pcInformerFactory.ForResource(pcGVR).Informer()
+
 	// Create the controller
 	ctrl := controller.NewController(
-		clientset,
+		dynamicClient,
 		podInformer,
+		pcInformer,
 		nodeName,
 		criSocket,
 		captureDir,
@@ -106,6 +120,7 @@ func main() {
 
 	// Start informers
 	informerFactory.Start(ctx.Done())
+	pcInformerFactory.Start(ctx.Done())
 
 	// Run the controller
 	if err := ctrl.Run(ctx, 2); err != nil {

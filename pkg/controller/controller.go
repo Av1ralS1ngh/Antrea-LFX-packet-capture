@@ -4,36 +4,63 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
+	"path/filepath"
 	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/dynamic"
 	coreinformers "k8s.io/client-go/informers/core/v1"
-	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
+
+	"github.com/Av1ralS1ngh/antrea-packet-capture/pkg/apis/packetcapture"
 )
 
 const (
-	// AnnotationKey is the annotation that triggers packet capture
-	AnnotationKey = "tcpdump.antrea.io"
-
-	// CaptureDir is where pcap files are stored
+	// CaptureDir is where pcap files are stored.
 	CaptureDir = "/captures"
 
-	maxRetries = 5
+	maxRetries      = 5
+	defaultMaxFiles = 3
+
+	PhasePending   = "Pending"
+	PhaseRunning   = "Running"
+	PhaseCompleted = "Completed"
+	PhaseFailed    = "Failed"
 )
 
-// Controller watches Pods and manages packet captures based on annotations
+var packetCaptureGVR = schema.GroupVersionResource{
+	Group:    "antrea.io",
+	Version:  "v1alpha1",
+	Resource: "packetcaptures",
+}
+
+// CaptureState tracks a running capture on a Pod.
+type CaptureState struct {
+	captureKey  string
+	fileLocation string
+	timeout     time.Duration
+	stopTimer   *time.Timer
+}
+
+// Controller watches PacketCapture resources and manages packet captures.
 type Controller struct {
-	kubeClient kubernetes.Interface
+	pcClient   dynamic.Interface
 	podLister  corelisters.PodLister
 	podSynced  cache.InformerSynced
+	pcInformer cache.SharedIndexInformer
+	pcSynced   cache.InformerSynced
 	queue      workqueue.RateLimitingInterface
 	nodeName   string
 	criSocket  string
@@ -42,31 +69,40 @@ type Controller struct {
 	// Process manager for tcpdump
 	processManager *ProcessManager
 
-	// Track which Pods have active captures
 	mu             sync.Mutex
-	activeCaptures map[string]int // key: namespace/name, value: maxFiles
+	activeCaptures map[string]*CaptureState        // key: namespace/name
+	capturePods    map[string]map[string]struct{} // captureKey -> pod keys
 }
 
-// NewController creates a new capture controller
+// NewController creates a new capture controller.
 func NewController(
-	kubeClient kubernetes.Interface,
+	pcClient dynamic.Interface,
 	podInformer coreinformers.PodInformer,
+	pcInformer cache.SharedIndexInformer,
 	nodeName, criSocket, captureDir string,
 	maxConcurrent int,
 ) *Controller {
 	c := &Controller{
-		kubeClient:     kubeClient,
+		pcClient:       pcClient,
 		podLister:      podInformer.Lister(),
 		podSynced:      podInformer.Informer().HasSynced,
+		pcInformer:     pcInformer,
+		pcSynced:       pcInformer.HasSynced,
 		queue:          workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
 		nodeName:       nodeName,
 		criSocket:      criSocket,
 		captureDir:     captureDir,
 		processManager: NewProcessManager(maxConcurrent, captureDir, criSocket),
-		activeCaptures: make(map[string]int),
+		activeCaptures: make(map[string]*CaptureState),
+		capturePods:    make(map[string]map[string]struct{}),
 	}
 
-	// Set up event handlers
+	pcInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    c.addPacketCapture,
+		UpdateFunc: c.updatePacketCapture,
+		DeleteFunc: c.deletePacketCapture,
+	})
+
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    c.addPod,
 		UpdateFunc: c.updatePod,
@@ -76,44 +112,42 @@ func NewController(
 	return c
 }
 
-// podKey returns namespace/name for a Pod
+// podKey returns namespace/name for a Pod.
 func podKey(pod *corev1.Pod) string {
 	return pod.Namespace + "/" + pod.Name
 }
 
-// addPod handles Pod add events
-func (c *Controller) addPod(obj interface{}) {
-	pod := obj.(*corev1.Pod)
-	if pod.Spec.NodeName != c.nodeName {
-		return
-	}
-	if _, ok := pod.Annotations[AnnotationKey]; ok {
-		klog.V(2).InfoS("Pod added with capture annotation", "pod", podKey(pod))
-		c.enqueuePod(pod)
-	}
+// addPacketCapture handles PacketCapture add events.
+func (c *Controller) addPacketCapture(obj interface{}) {
+	c.enqueuePacketCapture(obj)
 }
 
-// updatePod handles Pod update events
+// updatePacketCapture handles PacketCapture update events.
+func (c *Controller) updatePacketCapture(_, newObj interface{}) {
+	c.enqueuePacketCapture(newObj)
+}
+
+// deletePacketCapture handles PacketCapture delete events.
+func (c *Controller) deletePacketCapture(obj interface{}) {
+	c.enqueuePacketCapture(obj)
+}
+
+// addPod handles Pod add events.
+func (c *Controller) addPod(obj interface{}) {
+	pod := obj.(*corev1.Pod)
+	c.enqueueMatchingPacketCaptures(pod)
+}
+
+// updatePod handles Pod update events.
 func (c *Controller) updatePod(oldObj, newObj interface{}) {
 	oldPod := oldObj.(*corev1.Pod)
 	newPod := newObj.(*corev1.Pod)
 
-	if newPod.Spec.NodeName != c.nodeName {
-		return
-	}
-
-	oldVal, oldOk := oldPod.Annotations[AnnotationKey]
-	newVal, newOk := newPod.Annotations[AnnotationKey]
-
-	// Enqueue if annotation was added, removed, or changed
-	if oldOk != newOk || oldVal != newVal {
-		klog.V(2).InfoS("Pod annotation changed", "pod", podKey(newPod),
-			"oldAnnotation", oldVal, "newAnnotation", newVal)
-		c.enqueuePod(newPod)
-	}
+	c.enqueueMatchingPacketCaptures(oldPod)
+	c.enqueueMatchingPacketCaptures(newPod)
 }
 
-// deletePod handles Pod delete events
+// deletePod handles Pod delete events.
 func (c *Controller) deletePod(obj interface{}) {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok {
@@ -129,29 +163,61 @@ func (c *Controller) deletePod(obj interface{}) {
 		}
 	}
 
+	c.enqueueMatchingPacketCaptures(pod)
+}
+
+// enqueuePacketCapture adds a PacketCapture to the work queue.
+func (c *Controller) enqueuePacketCapture(obj interface{}) {
+	key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
+	if err != nil {
+		klog.ErrorS(err, "Failed to get key for PacketCapture")
+		return
+	}
+	c.queue.Add(key)
+}
+
+// enqueueMatchingPacketCaptures adds matching PacketCapture resources for a Pod.
+func (c *Controller) enqueueMatchingPacketCaptures(pod *corev1.Pod) {
 	if pod.Spec.NodeName != c.nodeName {
 		return
 	}
 
-	klog.V(2).InfoS("Pod deleted", "pod", podKey(pod))
-	c.enqueuePod(pod)
+	objs := c.pcInformer.GetStore().List()
+	for _, obj := range objs {
+		pc, _, err := c.packetCaptureFromObject(obj)
+		if err != nil {
+			klog.ErrorS(err, "Failed to parse PacketCapture")
+			continue
+		}
+		if pc.Namespace != pod.Namespace {
+			continue
+		}
+		selector, err := metav1.LabelSelectorAsSelector(&pc.Spec.PodSelector)
+		if err != nil {
+			continue
+		}
+		if selector.Matches(labelsForPod(pod)) {
+			c.queue.Add(pc.Namespace + "/" + pc.Name)
+		}
+	}
 }
 
-// enqueuePod adds a Pod to the work queue
-func (c *Controller) enqueuePod(pod *corev1.Pod) {
-	c.queue.Add(podKey(pod))
+func labelsForPod(pod *corev1.Pod) labels.Set {
+	if pod.Labels == nil {
+		return labels.Set{}
+	}
+	return labels.Set(pod.Labels)
 }
 
-// Run starts the controller
+// Run starts the controller.
 func (c *Controller) Run(ctx context.Context, workers int) error {
 	defer c.queue.ShutDown()
 
 	klog.Info("Starting capture controller")
 	defer klog.Info("Shutting down capture controller")
 
-	// Wait for caches to sync
 	klog.Info("Waiting for informer caches to sync")
-	if !cache.WaitForCacheSync(ctx.Done(), c.podSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), c.podSynced, c.pcSynced) {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
 
@@ -164,13 +230,13 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 	return nil
 }
 
-// runWorker processes items from the queue
+// runWorker processes items from the queue.
 func (c *Controller) runWorker(ctx context.Context) {
 	for c.processNextWorkItem(ctx) {
 	}
 }
 
-// processNextWorkItem handles a single item from the queue
+// processNextWorkItem handles a single item from the queue.
 func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 	obj, shutdown := c.queue.Get()
 	if shutdown {
@@ -185,91 +251,129 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 		return true
 	}
 
-	err := c.syncPod(ctx, key)
+	err := c.syncPacketCapture(ctx, key)
 	if err == nil {
 		c.queue.Forget(obj)
 		return true
 	}
 
 	if c.queue.NumRequeues(obj) < maxRetries {
-		klog.ErrorS(err, "Error syncing Pod, retrying", "key", key)
+		klog.ErrorS(err, "Error syncing PacketCapture, retrying", "key", key)
 		c.queue.AddRateLimited(obj)
 		return true
 	}
 
-	klog.ErrorS(err, "Error syncing Pod, giving up", "key", key)
+	klog.ErrorS(err, "Error syncing PacketCapture, giving up", "key", key)
 	c.queue.Forget(obj)
 	return true
 }
 
-// syncPod is the main reconciliation logic
-func (c *Controller) syncPod(ctx context.Context, key string) error {
-	namespace, name, err := cache.SplitMetaNamespaceKey(key)
+// syncPacketCapture is the main reconciliation logic.
+func (c *Controller) syncPacketCapture(ctx context.Context, key string) error {
+	pc, _, exists, err := c.packetCaptureByKey(key)
 	if err != nil {
 		return err
 	}
-
-	pod, err := c.podLister.Pods(namespace).Get(name)
-	if k8serrors.IsNotFound(err) {
-		// Pod was deleted, stop any active capture
-		klog.V(2).InfoS("Pod not found, cleaning up", "key", key)
-		c.stopCapture(key)
+	if !exists {
+		c.cleanupCapture(key)
 		return nil
 	}
+
+	if pc.Status.Phase == PhaseCompleted {
+		c.cleanupCapture(key)
+		return nil
+	}
+
+	selector, err := metav1.LabelSelectorAsSelector(&pc.Spec.PodSelector)
+	if err != nil {
+		return c.ensurePacketCaptureStatus(ctx, key, pc.Status, packetcapture.PacketCaptureStatus{
+			Phase:   PhaseFailed,
+			Message: fmt.Sprintf("Invalid podSelector: %v", err),
+		})
+	}
+
+	pods, err := c.podLister.Pods(pc.Namespace).List(selector)
 	if err != nil {
 		return err
 	}
 
-	// Get annotation value
-	annotationValue, hasAnnotation := pod.Annotations[AnnotationKey]
+	desired := make(map[string]*corev1.Pod)
+	for _, pod := range pods {
+		if pod.Spec.NodeName != c.nodeName {
+			continue
+		}
+		desired[podKey(pod)] = pod
+	}
 
-	c.mu.Lock()
-	_, hasActiveCapture := c.activeCaptures[key]
-	c.mu.Unlock()
 
-	if !hasAnnotation {
-		// Annotation removed, stop capture
-		if hasActiveCapture {
-			klog.InfoS("Annotation removed, stopping capture", "pod", key)
-			c.stopCapture(key)
+	if err := c.reconcileCapture(ctx, key, pc, desired); err != nil {
+		return err
+	}
+
+	activeCount := c.activeCountForCapture(key)
+	if len(desired) == 0 {
+		if pc.Status.NodeName != "" && pc.Status.NodeName != c.nodeName {
+			return nil
+		}
+		if pc.Status.Phase == PhaseRunning || pc.Status.Phase == PhaseCompleted {
+			return nil
+		}
+		if pc.Status.Phase != PhaseCompleted {
+			return c.ensurePacketCaptureStatus(ctx, key, pc.Status, packetcapture.PacketCaptureStatus{
+				Phase:   PhasePending,
+				Message: "No matching pods on this node",
+			})
 		}
 		return nil
 	}
 
-	// Parse and validate annotation value
-	maxFiles, err := strconv.Atoi(annotationValue)
-	if err != nil || maxFiles <= 0 {
-		klog.ErrorS(err, "Invalid annotation value, ignoring",
-			"pod", key, "value", annotationValue)
-		return nil // Don't retry, it's a user error
+	if activeCount > 0 {
+		fileLocation := c.firstFileLocationForCapture(key)
+		return c.ensurePacketCaptureStatus(ctx, key, pc.Status, packetcapture.PacketCaptureStatus{
+			Phase:        PhaseRunning,
+			FileLocation: fileLocation,
+			NodeName:     c.nodeName,
+		})
 	}
 
-	// Check if capture needs to be started or restarted
-	c.mu.Lock()
-	currentMaxFiles := c.activeCaptures[key]
-	c.mu.Unlock()
-
-	if hasActiveCapture && currentMaxFiles == maxFiles {
-		// Capture already running with same config
+	if pc.Status.Phase == PhaseCompleted {
 		return nil
 	}
 
-	if hasActiveCapture {
-		// Annotation value changed, restart capture
-		klog.InfoS("Annotation value changed, restarting capture",
-			"pod", key, "oldValue", currentMaxFiles, "newValue", maxFiles)
-		c.stopCapture(key)
-	}
-
-	// Start new capture
-	return c.startCapture(ctx, pod, maxFiles)
+	return c.ensurePacketCaptureStatus(ctx, key, pc.Status, packetcapture.PacketCaptureStatus{
+		Phase:   PhasePending,
+		Message: "Waiting for capture to start",
+		NodeName: c.nodeName,
+	})
 }
 
-// startCapture begins a packet capture for the Pod
-func (c *Controller) startCapture(ctx context.Context, pod *corev1.Pod, maxFiles int) error {
+func (c *Controller) reconcileCapture(ctx context.Context, captureKey string, pc *packetcapture.PacketCapture, desired map[string]*corev1.Pod) error {
+	existing := c.capturePodsForKey(captureKey)
+	for podKey := range existing {
+		if _, ok := desired[podKey]; !ok {
+			c.stopCapture(podKey, "", "")
+		}
+	}
+
+	for podKey, pod := range desired {
+		state := c.getCaptureState(podKey)
+		if state != nil {
+			if state.captureKey != captureKey {
+				klog.InfoS("Pod already captured by another PacketCapture", "pod", podKey, "packetCapture", state.captureKey)
+			}
+			continue
+		}
+		if err := c.startCapture(ctx, captureKey, pc, pod); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (c *Controller) startCapture(ctx context.Context, captureKey string, pc *packetcapture.PacketCapture, pod *corev1.Pod) error {
 	key := podKey(pod)
 
-	// Get container PID for network namespace
 	containerID := ""
 	if len(pod.Status.ContainerStatuses) > 0 {
 		containerID = pod.Status.ContainerStatuses[0].ContainerID
@@ -278,32 +382,213 @@ func (c *Controller) startCapture(ctx context.Context, pod *corev1.Pod, maxFiles
 		return fmt.Errorf("no container ID found for pod %s", key)
 	}
 
-	// Start capture via process manager
-	err := c.processManager.StartCapture(ctx, key, pod.Name, containerID, maxFiles)
+	fileLocation := c.captureFileLocation(pc.Name, pod.Name)
+
+	err := c.processManager.StartCapture(ctx, key, pc.Name, pod.Name, containerID, defaultMaxFiles)
 	if err != nil {
 		if errors.Is(err, ErrMaxConcurrent) {
-			klog.InfoS("Max concurrent captures reached, retrying later", "pod", key)
-			c.queue.AddAfter(key, 2*time.Second)
+			klog.InfoS("Max concurrent captures reached, retrying later", "packetCapture", captureKey, "pod", key)
+			c.queue.AddAfter(captureKey, 2*time.Second)
 			return nil
 		}
 		return fmt.Errorf("failed to start capture: %w", err)
 	}
 
+	state := &CaptureState{
+		captureKey:   captureKey,
+		fileLocation: fileLocation,
+		timeout:      pc.Spec.Timeout.Duration,
+	}
+	if state.timeout > 0 {
+		state.stopTimer = time.AfterFunc(state.timeout, func() {
+			c.stopCaptureForTimeout(key)
+		})
+	}
+
 	c.mu.Lock()
-	c.activeCaptures[key] = maxFiles
+	c.activeCaptures[key] = state
+	if c.capturePods[captureKey] == nil {
+		c.capturePods[captureKey] = make(map[string]struct{})
+	}
+	c.capturePods[captureKey][key] = struct{}{}
 	c.mu.Unlock()
 
-	klog.InfoS("Started packet capture", "pod", key, "maxFiles", maxFiles)
+	klog.InfoS("Started packet capture", "packetCapture", captureKey, "pod", key, "file", fileLocation, "timeout", state.timeout)
 	return nil
 }
 
-// stopCapture stops an active capture and cleans up files
-func (c *Controller) stopCapture(key string) {
-	c.processManager.StopCapture(key)
-
+func (c *Controller) stopCaptureForTimeout(podKey string) {
 	c.mu.Lock()
-	delete(c.activeCaptures, key)
+	state := c.activeCaptures[podKey]
+	c.mu.Unlock()
+	if state == nil {
+		return
+	}
+
+	message := fmt.Sprintf("Capture timed out after %s", state.timeout.String())
+	c.stopCapture(podKey, PhaseCompleted, message)
+}
+
+func (c *Controller) stopCapture(podKey, phase, message string) {
+	c.mu.Lock()
+	state := c.activeCaptures[podKey]
+	if state != nil {
+		delete(c.activeCaptures, podKey)
+		if state.stopTimer != nil {
+			state.stopTimer.Stop()
+		}
+		pods := c.capturePods[state.captureKey]
+		if pods != nil {
+			delete(pods, podKey)
+			if len(pods) == 0 {
+				delete(c.capturePods, state.captureKey)
+			}
+		}
+	}
 	c.mu.Unlock()
 
-	klog.InfoS("Stopped packet capture", "pod", key)
+	if state == nil {
+		return
+	}
+
+	c.processManager.StopCapture(podKey)
+
+	if phase == "" {
+		return
+	}
+
+	if c.activeCountForCapture(state.captureKey) != 0 {
+		return
+	}
+
+	status := packetcapture.PacketCaptureStatus{
+		Phase:        phase,
+		FileLocation: state.fileLocation,
+		Message:      message,
+		NodeName:     c.nodeName,
+	}
+	if err := c.updatePacketCaptureStatus(context.Background(), state.captureKey, status); err != nil {
+		klog.ErrorS(err, "Failed to update PacketCapture status", "packetCapture", state.captureKey)
+	}
+}
+
+func (c *Controller) cleanupCapture(captureKey string) {
+	pods := c.capturePodsForKey(captureKey)
+	for podKey := range pods {
+		c.stopCapture(podKey, "", "")
+	}
+}
+
+func (c *Controller) captureFileLocation(captureName, podName string) string {
+	return filepath.Join(c.captureDir, fmt.Sprintf("capture-%s-%s.pcap", captureName, podName))
+}
+
+func (c *Controller) packetCaptureFromObject(obj interface{}) (*packetcapture.PacketCapture, *unstructured.Unstructured, error) {
+	u, ok := obj.(*unstructured.Unstructured)
+	if !ok {
+		return nil, nil, fmt.Errorf("expected Unstructured but got %T", obj)
+	}
+	pc := &packetcapture.PacketCapture{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, pc); err != nil {
+		return nil, nil, err
+	}
+	return pc, u, nil
+}
+
+func (c *Controller) packetCaptureByKey(key string) (*packetcapture.PacketCapture, *unstructured.Unstructured, bool, error) {
+	obj, exists, err := c.pcInformer.GetStore().GetByKey(key)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if !exists {
+		return nil, nil, false, nil
+	}
+	pc, u, err := c.packetCaptureFromObject(obj)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	return pc, u, true, nil
+}
+
+func (c *Controller) capturePodsForKey(captureKey string) map[string]struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	result := make(map[string]struct{})
+	for podKey := range c.capturePods[captureKey] {
+		result[podKey] = struct{}{}
+	}
+	return result
+}
+
+func (c *Controller) getCaptureState(podKey string) *CaptureState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.activeCaptures[podKey]
+}
+
+func (c *Controller) activeCountForCapture(captureKey string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.capturePods[captureKey])
+}
+
+func (c *Controller) firstFileLocationForCapture(captureKey string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for podKey := range c.capturePods[captureKey] {
+		if state := c.activeCaptures[podKey]; state != nil {
+			return state.fileLocation
+		}
+	}
+	return ""
+}
+
+func (c *Controller) ensurePacketCaptureStatus(ctx context.Context, key string, current, desired packetcapture.PacketCaptureStatus) error {
+	if current.NodeName != "" && current.NodeName != c.nodeName {
+		return nil
+	}
+	if statusEqual(current, desired) {
+		return nil
+	}
+	return c.updatePacketCaptureStatus(ctx, key, desired)
+}
+
+func statusEqual(a, b packetcapture.PacketCaptureStatus) bool {
+	return a.Phase == b.Phase && a.FileLocation == b.FileLocation && a.Message == b.Message && a.NodeName == b.NodeName
+}
+
+func (c *Controller) updatePacketCaptureStatus(ctx context.Context, key string, status packetcapture.PacketCaptureStatus) error {
+	namespace, name, err := cache.SplitMetaNamespaceKey(key)
+	if err != nil {
+		return err
+	}
+
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		obj, err := c.pcClient.Resource(packetCaptureGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+		if k8serrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		current := &packetcapture.PacketCapture{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, current); err != nil {
+			return err
+		}
+		if statusEqual(current.Status, status) {
+			return nil
+		}
+
+		statusMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&status)
+		if err != nil {
+			return err
+		}
+		if err := unstructured.SetNestedField(obj.Object, statusMap, "status"); err != nil {
+			return err
+		}
+
+		_, err = c.pcClient.Resource(packetCaptureGVR).Namespace(namespace).UpdateStatus(ctx, obj, metav1.UpdateOptions{})
+		return err
+	})
 }

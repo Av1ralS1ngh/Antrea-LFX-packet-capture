@@ -1,0 +1,10 @@
+apiVersion: antrea.io/v1alpha1
+kind: PacketCapture
+metadata:
+  name: capture-db-traffic
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: database
+  timeout: 30s
