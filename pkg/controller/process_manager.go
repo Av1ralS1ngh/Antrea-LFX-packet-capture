@@ -23,6 +23,7 @@ type ProcessManager struct {
 	semaphore     chan struct{}
 	captureDir    string
 	criSocket     string
+	onExit        func(string)
 }
 
 // CaptureProcess tracks a running tcpdump process
@@ -53,6 +54,21 @@ func NewProcessManager(maxConcurrent int, captureDir, criSocket string) *Process
 	}
 
 	return pm
+}
+
+// SetOnExit registers a callback invoked when a capture process exits.
+func (pm *ProcessManager) SetOnExit(onExit func(string)) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.onExit = onExit
+}
+
+// HasCapture reports whether a capture is currently active for the key.
+func (pm *ProcessManager) HasCapture(key string) bool {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	_, exists := pm.captures[key]
+	return exists
 }
 
 // StartCapture queues a capture request
@@ -162,6 +178,13 @@ func (pm *ProcessManager) monitorProcess(key string, cmd *exec.Cmd, cancel conte
 	}
 
 	cancel()
+
+	pm.mu.Lock()
+	onExit := pm.onExit
+	pm.mu.Unlock()
+	if onExit != nil {
+		onExit(key)
+	}
 }
 
 // StopCapture stops a running capture and cleans up files

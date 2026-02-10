@@ -40,6 +40,7 @@ type CaptureState struct {
 	fileLocation string
 	filePattern  string
 	maxFiles     int // Track annotation value for reconciliation
+	containerID  string
 }
 
 // Controller watches Pods and manages packet captures.
@@ -64,6 +65,7 @@ func NewController(
 	nodeName, criSocket, captureDir string,
 	maxConcurrent int,
 ) *Controller {
+	pm := NewProcessManager(maxConcurrent, captureDir, criSocket)
 	c := &Controller{
 		podLister:      podInformer.Lister(),
 		podSynced:      podInformer.Informer().HasSynced,
@@ -71,9 +73,11 @@ func NewController(
 		nodeName:       nodeName,
 		criSocket:      criSocket,
 		captureDir:     captureDir,
-		processManager: NewProcessManager(maxConcurrent, captureDir, criSocket),
+		processManager: pm,
 		activeCaptures: make(map[string]*CaptureState),
 	}
+
+	pm.SetOnExit(c.onCaptureExit)
 
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    c.addPod,
@@ -241,25 +245,6 @@ func parseMaxFiles(value string) (int, error) {
 }
 
 func (c *Controller) startCapture(ctx context.Context, key string, pod *corev1.Pod, maxFiles int) error {
-	// Check if capture already running (hold lock to prevent race)
-	c.mu.Lock()
-	existingCapture := c.activeCaptures[key]
-	c.mu.Unlock()
-
-	// If capture exists, check if annotation value (maxFiles) changed
-	if existingCapture != nil {
-		if existingCapture.maxFiles == maxFiles {
-			// Same annotation value, capture already running with correct config
-			return nil
-		}
-		// Annotation changed, restart capture with new maxFiles
-		klog.InfoS("Annotation value changed, restarting capture",
-			"pod", key,
-			"oldMaxFiles", existingCapture.maxFiles,
-			"newMaxFiles", maxFiles)
-		c.stopCapture(key)
-	}
-
 	// Ensure Pod is in Running state
 	if pod.Status.Phase != corev1.PodRunning {
 		return fmt.Errorf("pod %s is not running (phase: %s)", key, pod.Status.Phase)
@@ -292,6 +277,28 @@ func (c *Controller) startCapture(ctx context.Context, key string, pod *corev1.P
 		return fmt.Errorf("no container ID found for container %s in pod %s", targetContainerName, key)
 	}
 
+	// Check if capture already running (hold lock to prevent race)
+	c.mu.Lock()
+	existingCapture := c.activeCaptures[key]
+	c.mu.Unlock()
+
+	if existingCapture != nil {
+		sameConfig := existingCapture.maxFiles == maxFiles && existingCapture.containerID == containerID
+		if sameConfig && c.processManager.HasCapture(key) {
+			// Capture already running with correct config
+			return nil
+		}
+
+		klog.InfoS("Restarting capture due to config or process change",
+			"pod", key,
+			"oldMaxFiles", existingCapture.maxFiles,
+			"newMaxFiles", maxFiles,
+			"oldContainerID", existingCapture.containerID,
+			"newContainerID", containerID,
+			"processActive", c.processManager.HasCapture(key))
+		c.stopCapture(key)
+	}
+
 	fileLocation := c.captureFileLocation(pod.Name)
 
 	err := c.processManager.StartCapture(ctx, key, pod.Name, containerID, maxFiles)
@@ -303,6 +310,7 @@ func (c *Controller) startCapture(ctx context.Context, key string, pod *corev1.P
 		fileLocation: fileLocation,
 		filePattern:  c.captureFilePattern(pod.Name),
 		maxFiles:     maxFiles,
+		containerID:  containerID,
 	}
 
 	c.mu.Lock()
@@ -311,6 +319,10 @@ func (c *Controller) startCapture(ctx context.Context, key string, pod *corev1.P
 
 	klog.InfoS("Started packet capture", "pod", key, "file", fileLocation, "maxFiles", maxFiles)
 	return nil
+}
+
+func (c *Controller) onCaptureExit(key string) {
+	c.queue.Add(key)
 }
 
 func (c *Controller) stopCapture(podKey string) {
