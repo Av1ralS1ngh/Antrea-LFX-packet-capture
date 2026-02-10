@@ -4,7 +4,7 @@ A Kubernetes controller that performs on-demand packet capture on Pods using `tc
 
 ## Overview
 
-This controller watches Pod annotations and starts a packet capture on matching Pods' `eth0` interfaces. The captures are stored on the node in files named `/captures/capture-<pod>.pcap` (with rotation if `-C/-W` is used).
+This controller watches Pod annotations and starts a packet capture on matching Pods' `eth0` interfaces. The captures are stored on the node in files named `/capture/capture-<pod>.pcap` (with rotation if `-C/-W` is used).
 
 ### Features
 
@@ -55,7 +55,7 @@ This controller watches Pod annotations and starts a packet capture on matching 
    Check generated files in the controller pod:
 
    ```bash
-   kubectl exec -n kube-system <controller-pod-name> -- ls -l /captures/capture-*
+   kubectl exec -n kube-system <controller-pod-name> -- ls -l /capture/capture-*
    ```
 
 4. **Stop Capture**
@@ -90,14 +90,38 @@ Optional environment variables:
 - **ProcessManager**: Manages `tcpdump` processes using `nsenter` to access Pod network namespaces.
 - **Host Access**: Uses `hostPID: true` and mounts `/run/containerd/containerd.sock` to resolve container PIDs via `crictl`.
 
+## Security Posture
+
+The DaemonSet requires elevated privileges to perform packet capture across Pod network namespaces. The security configuration is explicit and minimal:
+
+### Required Permissions
+
+- **`hostPID: true`**: Access host process namespace to use `nsenter`
+- **`runAsUser: 0`**: Run as root (required for namespace operations)
+- **`NET_ADMIN`**: Capture network packets
+- **`NET_RAW`**: Access raw sockets for tcpdump
+- **`SYS_ADMIN`**: Enter container network namespaces via `nsenter`
+- **`SYS_PTRACE`**: Read container process information
+- **`DAC_READ_SEARCH`**: Access container filesystem paths
+
+### Mitigations
+
+- **`privileged: false`**: Avoid full privileged mode
+- **Drop ALL capabilities** first, then add only required ones
+- **Principle of least privilege**: Only capabilities strictly necessary for packet capture
+
+### Multi-Container Pod Policy
+
+When a Pod has multiple containers, the controller implements a deterministic selection policy: it always captures traffic from the **first container** (`spec.containers[0]`). This ensures predictable behavior and avoids ambiguity.
+
 ## Important Notes
 
 ### File Naming
 
-When using `tcpdump -W <N>`, tcpdump automatically appends numeric suffixes to capture files. For example, with `-w /captures/capture-traffic-generator.pcap -W 5`, the files will be named:
-- `/captures/capture-traffic-generator.pcap0`
-- `/captures/capture-traffic-generator.pcap1`
-- `/captures/capture-traffic-generator.pcap2`
+When using `tcpdump -W <N>`, tcpdump automatically appends numeric suffixes to capture files. For example, with `-w /capture/capture-traffic-generator.pcap -W 5`, the files will be named:
+- `/capture/capture-traffic-generator.pcap0`
+- `/capture/capture-traffic-generator.pcap1`
+- `/capture/capture-traffic-generator.pcap2`
 - etc.
 
 This is standard tcpdump behavior for file rotation.

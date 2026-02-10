@@ -23,7 +23,7 @@ func main() {
 		maxConcurrent int
 	)
 	flag.StringVar(&criSocket, "cri-socket", "", "Path to CRI socket (auto-detected if empty)")
-	flag.StringVar(&captureDir, "capture-dir", "/captures", "Directory to store pcap files")
+	flag.StringVar(&captureDir, "capture-dir", "/capture", "Directory to store pcap files")
 	flag.IntVar(&maxConcurrent, "max-concurrent", 5, "Maximum concurrent captures")
 
 	klog.InitFlags(nil)

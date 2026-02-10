@@ -72,7 +72,7 @@ start_time="$(date +%s)"
 file_location=""
 packet_count="0"
 while true; do
-  file_location="$(kubectl -n kube-system exec "$controller_pod" -- sh -c "ls -t /captures/capture-traffic-generator.pcap* 2>/dev/null | head -n 1" | tr -d '\r')"
+  file_location="$(kubectl -n kube-system exec "$controller_pod" -- sh -c "ls -t /capture/capture-traffic-generator.pcap* 2>/dev/null | head -n 1" | tr -d '\r')"
   if [[ -n "$file_location" ]] && kubectl -n kube-system exec "$controller_pod" -- sh -c "test -f '$file_location'" >/dev/null 2>&1; then
     packet_count="$(kubectl -n kube-system exec "$controller_pod" -- sh -c "tcpdump -r '$file_location' -nn 2>/dev/null | wc -l" | tr -d ' ')"
     if [[ -n "$packet_count" && "$packet_count" -gt 0 ]]; then

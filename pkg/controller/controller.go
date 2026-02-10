@@ -39,6 +39,7 @@ func newTerminalError(format string, args ...interface{}) error {
 type CaptureState struct {
 	fileLocation string
 	filePattern  string
+	maxFiles     int // Track annotation value for reconciliation
 }
 
 // Controller watches Pods and manages packet captures.
@@ -242,26 +243,42 @@ func parseMaxFiles(value string) (int, error) {
 func (c *Controller) startCapture(ctx context.Context, key string, pod *corev1.Pod, maxFiles int) error {
 	// Check if capture already running (hold lock to prevent race)
 	c.mu.Lock()
-	if c.activeCaptures[key] != nil {
-		c.mu.Unlock()
-		return nil
-	}
+	existingCapture := c.activeCaptures[key]
 	c.mu.Unlock()
+
+	// If capture exists, check if annotation value (maxFiles) changed
+	if existingCapture != nil {
+		if existingCapture.maxFiles == maxFiles {
+			// Same annotation value, capture already running with correct config
+			return nil
+		}
+		// Annotation changed, restart capture with new maxFiles
+		klog.InfoS("Annotation value changed, restarting capture",
+			"pod", key,
+			"oldMaxFiles", existingCapture.maxFiles,
+			"newMaxFiles", maxFiles)
+		c.stopCapture(key)
+	}
 
 	// Ensure Pod is in Running state
 	if pod.Status.Phase != corev1.PodRunning {
 		return fmt.Errorf("pod %s is not running (phase: %s)", key, pod.Status.Phase)
 	}
 
-	// Select target container
+	// Select target container (deterministic policy: always select first container)
 	if len(pod.Spec.Containers) == 0 {
 		return newTerminalError("pod %s has no containers", key)
 	}
-	if len(pod.Spec.Containers) > 1 {
-		return newTerminalError("pod %s has multiple containers; packet capture for multi-container pods is not supported", key)
-	}
 
 	targetContainerName := pod.Spec.Containers[0].Name
+
+	// Log when multi-container pod is detected
+	if len(pod.Spec.Containers) > 1 {
+		klog.InfoS("Multi-container pod detected, selecting first container",
+			"pod", key,
+			"selectedContainer", targetContainerName,
+			"totalContainers", len(pod.Spec.Containers))
+	}
 
 	// Find the container status by name
 	containerID := ""
@@ -285,6 +302,7 @@ func (c *Controller) startCapture(ctx context.Context, key string, pod *corev1.P
 	state := &CaptureState{
 		fileLocation: fileLocation,
 		filePattern:  c.captureFilePattern(pod.Name),
+		maxFiles:     maxFiles,
 	}
 
 	c.mu.Lock()

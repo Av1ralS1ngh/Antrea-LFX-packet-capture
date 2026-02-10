@@ -53,18 +53,23 @@ spec:
           image: capture-controller:latest
           imagePullPolicy: IfNotPresent
           securityContext:
-            privileged: false
+            # Security posture: requires elevated privileges for network namespace access
+            privileged: false # Avoid full privileged mode; use capabilities instead
+            runAsNonRoot: false # Must run as root to use nsenter
+            runAsUser: 0 # Required for nsenter to access container namespaces
+            readOnlyRootFilesystem: false # tcpdump writes to disk
+            allowPrivilegeEscalation: true # Required for capability usage
             capabilities:
+              drop: # Drop all capabilities, then add only what's needed
+                - ALL
               add:
-                [
-                  "NET_ADMIN",
-                  "NET_RAW",
-                  "SYS_ADMIN",
-                  "SYS_PTRACE",
-                  "DAC_READ_SEARCH",
-                ]
+                - NET_ADMIN # Required for packet capture
+                - NET_RAW # Required for raw socket access in tcpdump
+                - SYS_ADMIN # Required for nsenter to enter namespaces
+                - SYS_PTRACE # Required to read container process info
+                - DAC_READ_SEARCH # Required to access container filesystem
           args:
-            - --capture-dir=/captures
+            - --capture-dir=/capture
           env:
             - name: NODE_NAME
               valueFrom:
