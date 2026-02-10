@@ -69,22 +69,6 @@ kubectl annotate pod traffic-generator tcpdump.antrea.io="5"
 - **Process Manager:** Manages tcpdump processes with semaphore-based concurrency control
 - **Multi-container Pods:** Always selects first container (`spec.containers[0]`)
 
-## Security
-
-Requires elevated privileges for network namespace access:
-- `hostPID: true` - Access host PID namespace for nsenter
-- `runAsUser: 0` - Required for namespace operations
-- Capabilities: `NET_ADMIN`, `NET_RAW`, `SYS_ADMIN`, `SYS_PTRACE`, `DAC_READ_SEARCH`
-- `privileged: false` - Avoid full privileged mode
-
-See `deploy/daemonset.yaml` for full security configuration.
-
-## File Naming
-
-tcpdump appends numeric suffixes when using `-W`:
-- `/capture-pod.pcap0`
-- `/capture-pod.pcap1` ...etc
-
 ## Development
 
 ```bash
