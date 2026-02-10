@@ -99,7 +99,7 @@ func (pm *ProcessManager) doStartCapture(ctx context.Context, key, podName, cont
 		"--net="+fmt.Sprintf("/proc/%d/ns/net", pid),
 		"--",
 		"tcpdump",
-		"-C", "1M", // 1MB file size (exact spec: tcpdump -C 1M -W <N>)
+		"-C", "1", // 1MB file size (tcpdump expects MB as a number)
 		"-W", fmt.Sprintf("%d", maxFiles), // max files
 		"-w", outputFile,
 		"-i", "eth0",
