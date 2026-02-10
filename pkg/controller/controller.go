@@ -22,6 +22,19 @@ const (
 	annotationKey = "tcpdump.antrea.io"
 )
 
+// Terminal errors that should not trigger retries
+type terminalError struct {
+	msg string
+}
+
+func (e *terminalError) Error() string {
+	return e.msg
+}
+
+func newTerminalError(format string, args ...interface{}) error {
+	return &terminalError{msg: fmt.Sprintf(format, args...)}
+}
+
 // CaptureState tracks a running capture on a Pod.
 type CaptureState struct {
 	fileLocation string
@@ -164,8 +177,14 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 
 	err := c.syncPod(ctx, key)
 	if err != nil {
-		klog.ErrorS(err, "Error syncing Pod", "key", key)
-		c.queue.AddRateLimited(key)
+		// Check if this is a terminal error (e.g., multi-container Pod)
+		if _, isTerminal := err.(*terminalError); isTerminal {
+			klog.Warningf("Terminal error for Pod %s, will not retry: %v", key, err)
+			c.queue.Forget(obj)
+		} else {
+			klog.ErrorS(err, "Error syncing Pod", "key", key)
+			c.queue.AddRateLimited(key)
+		}
 	} else {
 		c.queue.Forget(obj)
 	}
@@ -236,10 +255,10 @@ func (c *Controller) startCapture(ctx context.Context, key string, pod *corev1.P
 
 	// Select target container
 	if len(pod.Spec.Containers) == 0 {
-		return fmt.Errorf("pod %s has no containers", key)
+		return newTerminalError("pod %s has no containers", key)
 	}
 	if len(pod.Spec.Containers) > 1 {
-		return fmt.Errorf("pod %s has multiple containers; packet capture for multi-container pods is not supported", key)
+		return newTerminalError("pod %s has multiple containers; packet capture for multi-container pods is not supported", key)
 	}
 
 	targetContainerName := pod.Spec.Containers[0].Name

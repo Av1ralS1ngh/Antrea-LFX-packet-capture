@@ -4,7 +4,7 @@ A Kubernetes controller that performs on-demand packet capture on Pods using `tc
 
 ## Overview
 
-This controller watches Pod annotations and starts a packet capture on matching Pods' `eth0` interfaces. The captures are stored on the node in files named `/capture-<pod>.pcap` (with rotation if `-C/-W` is used).
+This controller watches Pod annotations and starts a packet capture on matching Pods' `eth0` interfaces. The captures are stored on the node in files named `/captures/capture-<pod>.pcap` (with rotation if `-C/-W` is used).
 
 ### Features
 
@@ -55,7 +55,7 @@ This controller watches Pod annotations and starts a packet capture on matching 
    Check generated files in the controller pod:
 
    ```bash
-   kubectl exec -n kube-system <controller-pod-name> -- ls -l /capture-*
+   kubectl exec -n kube-system <controller-pod-name> -- ls -l /captures/capture-*
    ```
 
 4. **Stop Capture**
@@ -94,10 +94,10 @@ Optional environment variables:
 
 ### File Naming
 
-When using `tcpdump -W <N>`, tcpdump automatically appends numeric suffixes to capture files. For example, with `-w /capture-traffic-generator.pcap -W 5`, the files will be named:
-- `/capture-traffic-generator.pcap0`
-- `/capture-traffic-generator.pcap1`
-- `/capture-traffic-generator.pcap2`
+When using `tcpdump -W <N>`, tcpdump automatically appends numeric suffixes to capture files. For example, with `-w /captures/capture-traffic-generator.pcap -W 5`, the files will be named:
+- `/captures/capture-traffic-generator.pcap0`
+- `/captures/capture-traffic-generator.pcap1`
+- `/captures/capture-traffic-generator.pcap2`
 - etc.
 
 This is standard tcpdump behavior for file rotation.
