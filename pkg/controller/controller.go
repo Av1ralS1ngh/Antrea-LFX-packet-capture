@@ -32,7 +32,7 @@ type CaptureState struct {
 type Controller struct {
 	podLister  corelisters.PodLister
 	podSynced  cache.InformerSynced
-	queue      workqueue.Interface
+	queue      workqueue.RateLimitingInterface
 	nodeName   string
 	criSocket  string
 	captureDir string
@@ -53,7 +53,7 @@ func NewController(
 	c := &Controller{
 		podLister:      podInformer.Lister(),
 		podSynced:      podInformer.Informer().HasSynced,
-		queue:          workqueue.New(),
+		queue:          workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "capture"),
 		nodeName:       nodeName,
 		criSocket:      criSocket,
 		captureDir:     captureDir,
@@ -158,13 +158,16 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 	key, ok := obj.(string)
 	if !ok {
 		klog.Errorf("Expected string in workqueue but got %#v", obj)
+		c.queue.Forget(obj)
 		return true
 	}
 
 	err := c.syncPod(ctx, key)
-	c.queue.Done(obj)
 	if err != nil {
 		klog.ErrorS(err, "Error syncing Pod", "key", key)
+		c.queue.AddRateLimited(key)
+	} else {
+		c.queue.Forget(obj)
 	}
 	return true
 }
@@ -203,14 +206,6 @@ func (c *Controller) syncPod(ctx context.Context, key string) error {
 		return nil
 	}
 
-	// Check if capture already running (hold lock to prevent race)
-	c.mu.Lock()
-	if c.activeCaptures[key] != nil {
-		c.mu.Unlock()
-		return nil
-	}
-	c.mu.Unlock()
-
 	return c.startCapture(ctx, key, pod, maxFiles)
 }
 
@@ -226,17 +221,39 @@ func parseMaxFiles(value string) (int, error) {
 }
 
 func (c *Controller) startCapture(ctx context.Context, key string, pod *corev1.Pod, maxFiles int) error {
+	// Check if capture already running (hold lock to prevent race)
+	c.mu.Lock()
+	if c.activeCaptures[key] != nil {
+		c.mu.Unlock()
+		return nil
+	}
+	c.mu.Unlock()
+
 	// Ensure Pod is in Running state
 	if pod.Status.Phase != corev1.PodRunning {
 		return fmt.Errorf("pod %s is not running (phase: %s)", key, pod.Status.Phase)
 	}
 
+	// Select target container
+	if len(pod.Spec.Containers) == 0 {
+		return fmt.Errorf("pod %s has no containers", key)
+	}
+	if len(pod.Spec.Containers) > 1 {
+		return fmt.Errorf("pod %s has multiple containers; packet capture for multi-container pods is not supported", key)
+	}
+
+	targetContainerName := pod.Spec.Containers[0].Name
+
+	// Find the container status by name
 	containerID := ""
-	if len(pod.Status.ContainerStatuses) > 0 {
-		containerID = pod.Status.ContainerStatuses[0].ContainerID
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name == targetContainerName {
+			containerID = cs.ContainerID
+			break
+		}
 	}
 	if containerID == "" {
-		return fmt.Errorf("no container ID found for pod %s", key)
+		return fmt.Errorf("no container ID found for container %s in pod %s", targetContainerName, key)
 	}
 
 	fileLocation := c.captureFileLocation(pod.Name)
