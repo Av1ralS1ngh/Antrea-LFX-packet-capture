@@ -88,9 +88,6 @@ func main() {
 		maxConcurrent,
 	)
 
-	// Register metrics
-	controller.RegisterMetrics()
-
 	// Set up signal handling for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

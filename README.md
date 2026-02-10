@@ -90,6 +90,35 @@ Optional environment variables:
 - **ProcessManager**: Manages `tcpdump` processes using `nsenter` to access Pod network namespaces.
 - **Host Access**: Uses `hostPID: true` and mounts `/run/containerd/containerd.sock` to resolve container PIDs via `crictl`.
 
+## Important Notes
+
+### File Naming
+
+When using `tcpdump -W <N>`, tcpdump automatically appends numeric suffixes to capture files. For example, with `-w /capture-traffic-generator.pcap -W 5`, the files will be named:
+- `/capture-traffic-generator.pcap0`
+- `/capture-traffic-generator.pcap1`
+- `/capture-traffic-generator.pcap2`
+- etc.
+
+This is standard tcpdump behavior for file rotation.
+
+## Deliverables
+
+This repository contains all required deliverables for the LFX Mentorship task:
+
+1. **Go source code**: `cmd/` and `pkg/` directories
+2. **Dockerfile**: `Dockerfile` (uses ubuntu:24.04 base image)
+3. **Makefile**: `Makefile` for build automation
+4. **Capture DaemonSet manifest**: `deploy/daemonset.yaml` (includes RBAC)
+5. **Test Pod manifest**: `deploy/test-pod.yaml`
+6. **Pod describe output**: `deliverables/pod-describe.txt`
+7. **Pods listing**: `deliverables/pods.txt`
+8. **Capture files listing**: `deliverables/capture-files.txt`
+9. **Extracted pcap file**: `deliverables/capture.pcap`
+10. **Pcap text output**: `deliverables/capture-output.txt`
+11. **Cleanup verification**: `deliverables/cleanup-verification.txt`
+
 ## License
 
 MIT
+

@@ -99,7 +99,7 @@ func (pm *ProcessManager) doStartCapture(ctx context.Context, key, podName, cont
 		"--net="+fmt.Sprintf("/proc/%d/ns/net", pid),
 		"--",
 		"tcpdump",
-		"-C", "1", // 1MB file size
+		"-C", "1M", // 1MB file size (exact spec: tcpdump -C 1M -W <N>)
 		"-W", fmt.Sprintf("%d", maxFiles), // max files
 		"-w", outputFile,
 		"-i", "eth0",
@@ -115,7 +115,6 @@ func (pm *ProcessManager) doStartCapture(ctx context.Context, key, podName, cont
 	// Start the process
 	if err := cmd.Start(); err != nil {
 		cancel()
-		RecordCaptureStart(err)
 		return fmt.Errorf("failed to start tcpdump: %w", err)
 	}
 
@@ -126,8 +125,6 @@ func (pm *ProcessManager) doStartCapture(ctx context.Context, key, podName, cont
 		filePattern: filePattern,
 	}
 
-	RecordCaptureStart(nil)
-	RecordCaptureActive(1)
 	klog.InfoS("tcpdump process started", "pod", key, "pid", cmd.Process.Pid)
 
 	// Monitor stderr in background
@@ -157,7 +154,6 @@ func (pm *ProcessManager) monitorProcess(key string, cmd *exec.Cmd, cancel conte
 	capture, exists := pm.captures[key]
 	if exists {
 		delete(pm.captures, key)
-		RecordCaptureActive(-1)
 	}
 	pm.mu.Unlock()
 
@@ -174,7 +170,6 @@ func (pm *ProcessManager) StopCapture(key string) {
 	capture, exists := pm.captures[key]
 	if exists {
 		delete(pm.captures, key)
-		RecordCaptureActive(-1)
 	}
 	pm.mu.Unlock()
 

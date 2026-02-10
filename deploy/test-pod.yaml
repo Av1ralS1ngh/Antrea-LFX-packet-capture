@@ -5,8 +5,6 @@ metadata:
   namespace: default
   labels:
     app: database
-  annotations:
-    tcpdump.antrea.io: "5"
 spec:
   containers:
     - name: traffic

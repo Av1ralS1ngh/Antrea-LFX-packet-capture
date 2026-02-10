@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -21,7 +20,6 @@ import (
 
 const (
 	annotationKey = "tcpdump.antrea.io"
-	maxRetries    = 5
 )
 
 // CaptureState tracks a running capture on a Pod.
@@ -34,7 +32,7 @@ type CaptureState struct {
 type Controller struct {
 	podLister  corelisters.PodLister
 	podSynced  cache.InformerSynced
-	queue      workqueue.RateLimitingInterface
+	queue      workqueue.Interface
 	nodeName   string
 	criSocket  string
 	captureDir string
@@ -55,7 +53,7 @@ func NewController(
 	c := &Controller{
 		podLister:      podInformer.Lister(),
 		podSynced:      podInformer.Informer().HasSynced,
-		queue:          workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
+		queue:          workqueue.New(),
 		nodeName:       nodeName,
 		criSocket:      criSocket,
 		captureDir:     captureDir,
@@ -159,25 +157,15 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 
 	key, ok := obj.(string)
 	if !ok {
-		c.queue.Forget(obj)
 		klog.Errorf("Expected string in workqueue but got %#v", obj)
 		return true
 	}
 
 	err := c.syncPod(ctx, key)
-	if err == nil {
-		c.queue.Forget(obj)
-		return true
+	c.queue.Done(obj)
+	if err != nil {
+		klog.ErrorS(err, "Error syncing Pod", "key", key)
 	}
-
-	if c.queue.NumRequeues(obj) < maxRetries {
-		klog.ErrorS(err, "Error syncing Pod, retrying", "key", key)
-		c.queue.AddRateLimited(obj)
-		return true
-	}
-
-	klog.ErrorS(err, "Error syncing Pod, giving up", "key", key)
-	c.queue.Forget(obj)
 	return true
 }
 
@@ -215,9 +203,13 @@ func (c *Controller) syncPod(ctx context.Context, key string) error {
 		return nil
 	}
 
-	if c.getCaptureState(key) != nil {
+	// Check if capture already running (hold lock to prevent race)
+	c.mu.Lock()
+	if c.activeCaptures[key] != nil {
+		c.mu.Unlock()
 		return nil
 	}
+	c.mu.Unlock()
 
 	return c.startCapture(ctx, key, pod, maxFiles)
 }
@@ -234,6 +226,11 @@ func parseMaxFiles(value string) (int, error) {
 }
 
 func (c *Controller) startCapture(ctx context.Context, key string, pod *corev1.Pod, maxFiles int) error {
+	// Ensure Pod is in Running state
+	if pod.Status.Phase != corev1.PodRunning {
+		return fmt.Errorf("pod %s is not running (phase: %s)", key, pod.Status.Phase)
+	}
+
 	containerID := ""
 	if len(pod.Status.ContainerStatuses) > 0 {
 		containerID = pod.Status.ContainerStatuses[0].ContainerID
@@ -246,11 +243,6 @@ func (c *Controller) startCapture(ctx context.Context, key string, pod *corev1.P
 
 	err := c.processManager.StartCapture(ctx, key, pod.Name, containerID, maxFiles)
 	if err != nil {
-		if errors.Is(err, ErrMaxConcurrent) {
-			klog.InfoS("Max concurrent captures reached, retrying later", "pod", key)
-			c.queue.AddAfter(key, 2*time.Second)
-			return nil
-		}
 		return fmt.Errorf("failed to start capture: %w", err)
 	}
 

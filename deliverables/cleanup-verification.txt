@@ -1,0 +1,17 @@
+# Cleanup Verification
+
+This file demonstrates that packet capture files are properly deleted when the annotation is removed.
+
+## Steps:
+1. Annotated Pod with tcpdump.antrea.io="5"
+2. Verified capture files were created
+3. Removed annotation: kubectl annotate pod traffic-generator tcpdump.antrea.io-
+4. Verified files were deleted
+
+## Before annotation removal:
+-rw-r--r--. 1 root root 4096 Feb  9 22:12 /capture-traffic-generator.pcap0
+
+## After annotation removal:
+ls: cannot access '/capture-*': No such file or directory
+
+This confirms that the controller properly cleans up capture files when the annotation is removed.
