@@ -9,7 +9,7 @@ This file demonstrates that packet capture files are properly deleted when the a
 4. Verified files were deleted
 
 ## Before annotation removal:
--rw-r--r--. 1 root root 4096 Feb  9 22:12 /capture-traffic-generator.pcap0
+-rw-r--r--. 1 root root 77824 Feb 10 03:15 /capture-traffic-generator.pcap0
 
 ## After annotation removal:
 ls: cannot access '/capture-*': No such file or directory

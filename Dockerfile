@@ -30,7 +30,4 @@ RUN ARCH="$(dpkg --print-architecture)"; \
 # Copy pre-built binary from local build
 COPY bin/capture-controller /usr/local/bin/
 
-# Create capture directory
-RUN mkdir -p /captures
-
 ENTRYPOINT ["/usr/local/bin/capture-controller"]

@@ -69,7 +69,7 @@ spec:
                 - SYS_PTRACE # Required to read container process info
                 - DAC_READ_SEARCH # Required to access container filesystem
           args:
-            - --capture-dir=/capture
+            - --capture-dir=/
           env:
             - name: NODE_NAME
               valueFrom:

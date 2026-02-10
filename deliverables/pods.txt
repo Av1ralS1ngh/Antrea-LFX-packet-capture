@@ -1,19 +1,19 @@
 NAMESPACE            NAME                                                 READY   STATUS    RESTARTS        AGE
-default              traffic-generator                                    1/1     Running   1 (6h12m ago)   25h
-kube-system          antrea-agent-5rdjp                                   2/2     Running   2 (6h12m ago)   25h
-kube-system          antrea-agent-7cw2x                                   2/2     Running   2 (6h12m ago)   25h
-kube-system          antrea-agent-ss8vl                                   2/2     Running   2 (6h12m ago)   25h
-kube-system          antrea-controller-f655ff978-jf8np                    1/1     Running   2 (6h11m ago)   25h
-kube-system          capture-controller-mz4d2                             1/1     Running   0               11m
-kube-system          capture-controller-rzkk6                             1/1     Running   0               11m
-kube-system          capture-controller-zd7z4                             1/1     Running   0               11m
-kube-system          coredns-668d6bf9bc-4xmtf                             1/1     Running   1 (6h12m ago)   25h
-kube-system          coredns-668d6bf9bc-59kxq                             1/1     Running   1 (6h12m ago)   25h
-kube-system          etcd-capture-test-control-plane                      1/1     Running   1 (6h12m ago)   25h
-kube-system          kube-apiserver-capture-test-control-plane            1/1     Running   1 (6h12m ago)   25h
-kube-system          kube-controller-manager-capture-test-control-plane   1/1     Running   10 (70m ago)    25h
-kube-system          kube-proxy-6fsh9                                     1/1     Running   1 (6h12m ago)   25h
-kube-system          kube-proxy-m6mvr                                     1/1     Running   1 (6h12m ago)   25h
-kube-system          kube-proxy-zvdjz                                     1/1     Running   1 (6h12m ago)   25h
-kube-system          kube-scheduler-capture-test-control-plane            1/1     Running   10 (70m ago)    25h
-local-path-storage   local-path-provisioner-7dc846544d-6kq9r              1/1     Running   1 (6h12m ago)   25h
+default              traffic-generator                                    1/1     Running   1 (11h ago)     30h
+kube-system          antrea-agent-22654                                   2/2     Running   0               4h22m
+kube-system          antrea-agent-n8fr6                                   2/2     Running   0               4h23m
+kube-system          antrea-agent-slktf                                   2/2     Running   0               4h24m
+kube-system          antrea-controller-7fb684bcdf-gkfn6                   1/1     Running   0               4h24m
+kube-system          capture-controller-glmfv                             1/1     Running   0               6m29s
+kube-system          capture-controller-rtctm                             1/1     Running   0               6m38s
+kube-system          capture-controller-zf5vc                             1/1     Running   0               6m35s
+kube-system          coredns-668d6bf9bc-4xmtf                             1/1     Running   1 (11h ago)     30h
+kube-system          coredns-668d6bf9bc-59kxq                             1/1     Running   1 (11h ago)     30h
+kube-system          etcd-capture-test-control-plane                      1/1     Running   1 (11h ago)     30h
+kube-system          kube-apiserver-capture-test-control-plane            1/1     Running   4 (21m ago)     30h
+kube-system          kube-controller-manager-capture-test-control-plane   1/1     Running   24 (8m5s ago)   30h
+kube-system          kube-proxy-6fsh9                                     1/1     Running   1 (11h ago)     30h
+kube-system          kube-proxy-m6mvr                                     1/1     Running   1 (11h ago)     30h
+kube-system          kube-proxy-zvdjz                                     1/1     Running   1 (11h ago)     30h
+kube-system          kube-scheduler-capture-test-control-plane            1/1     Running   24 (8m5s ago)   30h
+local-path-storage   local-path-provisioner-7dc846544d-6kq9r              1/1     Running   1 (11h ago)     30h
