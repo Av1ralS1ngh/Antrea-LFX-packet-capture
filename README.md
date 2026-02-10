@@ -1,148 +1,120 @@
 # Antrea LFX Packet Capture Controller
 
-A Kubernetes controller that performs on-demand packet capture on Pods using `tcpdump`. Developed as part of the LFX Mentorship 2026_01 task.
+A Kubernetes controller that performs on-demand packet capture on Pods using tcpdump.
 
 ## Overview
 
-This controller watches Pod annotations and starts a packet capture on matching Pods' `eth0` interfaces. The captures are stored on the node in files named `/capture-<pod>.pcap` (with rotation if `-C/-W` is used).
+Watches Pod annotations and starts packet capture when `tcpdump.antrea.io: "<N>"` is added. Captures are stored as `/capture-<pod>.pcap` with automatic rotation and cleanup.
 
-### Features
+## Quick Start
 
-- **On-demand Capture**: Triggered by Pod annotation `tcpdump.antrea.io: "<N>"`.
-- **Automatic Cleanup**: Stops the capture process and removes pcap files when the annotation is removed.
-- **Resource Management**: Uses a bounded worker queue to limit concurrent captures.
-- **Containerized**: Runs as a DaemonSet for node-local captures.
+```bash
+make kind-load
+```
 
-## Prerequisites
+```bash
+make deploy
+```
 
-- Kubernetes cluster (Kind recommended)
-- `kubectl`
-- `docker`
-- `make`
+```bash
+kubectl annotate pod <pod-name> tcpdump.antrea.io="5"
+```
+
+```bash
+kubectl exec -n kube-system <controller-pod> -- ls -l /capture-*
+```
+
+```bash
+kubectl annotate pod <pod-name> tcpdump.antrea.io-
+```
 
 ## Installation
 
-1. **Deploy Kind Cluster**
+**Prerequisites:** Kubernetes cluster, kubectl, docker, make
 
-   ```bash
-   make kind-load
-   ```
+1. **Build and Deploy:**
 
-   (This target builds the binary, builds the Docker image, creates the cluster if needed, and loads the image)
+```bash
+make kind-load
+```
 
-2. **Deploy Controller**
-   ```bash
-   make deploy
-   ```
-   This applies the DaemonSet and RBAC manifests to the `kube-system` namespace.
+```bash
+make deploy
+```
 
-## Usage
+2. **Deploy Test Pod:**
 
-1. **Deploy a Test Pod**
+```bash
+kubectl run traffic-generator --image=curlimages/curl \
+  -- /bin/sh -c "while true; do curl -s google.com; sleep 1; done"
+```
 
-   ```bash
-   kubectl run traffic-generator --image=curlimages/curl -- /bin/sh -c "while true; do curl -s google.com; sleep 1; done"
-   ```
+3. **Annotate Pod:**
 
-2. **Start Capture**
-   Annotate the Pod with the required key and max file count:
+```bash
+kubectl annotate pod traffic-generator tcpdump.antrea.io="5"
+```
 
-   ```bash
-   kubectl annotate pod traffic-generator tcpdump.antrea.io="5"
-   ```
+## How It Works
 
-3. **Verify Capture**
-   Check generated files in the controller pod:
+- Controller watches Pods on the same node via informers
+- When annotation is detected, starts `tcpdump` via `nsenter` into Pod's network namespace
+- Uses `crictl` to resolve container PID for namespace access
+- Invokes: `tcpdump -C 1M -W <N> -w /capture-<pod>.pcap -i eth0`
+- Cleans up pcap files when annotation is removed or Pod deleted
 
-   ```bash
-   kubectl exec -n kube-system <controller-pod-name> -- ls -l /capture-*
-   ```
+## Implementation
 
-4. **Stop Capture**
-   Remove the annotation:
+- **Controller:** Standard K8s controller with informers and work queue
+- **Process Manager:** Manages tcpdump processes with semaphore-based concurrency control
+- **Multi-container Pods:** Always selects first container (`spec.containers[0]`)
 
-   ```bash
-   kubectl annotate pod traffic-generator tcpdump.antrea.io-
-   ```
+## Security
+
+Requires elevated privileges for network namespace access:
+- `hostPID: true` - Access host PID namespace for nsenter
+- `runAsUser: 0` - Required for namespace operations
+- Capabilities: `NET_ADMIN`, `NET_RAW`, `SYS_ADMIN`, `SYS_PTRACE`, `DAC_READ_SEARCH`
+- `privileged: false` - Avoid full privileged mode
+
+See `deploy/daemonset.yaml` for full security configuration.
+
+## File Naming
+
+tcpdump appends numeric suffixes when using `-W`:
+- `/capture-pod.pcap0`
+- `/capture-pod.pcap1` ...etc
 
 ## Development
 
-- **Build Binary**: `make build`
-- **Unit Tests**: `make test`
-- **Build Docker Image**: `make docker-build`
+```bash
+make build
+```
 
-## Automated E2E Testing
+```bash
+make test
+```
 
-The `make e2e` target creates a Kind cluster, deploys the controller, starts a capture via annotation, generates traffic, and verifies it contains more than 0 packets.
+```bash
+make docker-build
+```
 
 ```bash
 make e2e
 ```
 
-Optional environment variables:
-
-- `CLUSTER_NAME`: Kind cluster name (default: `capture-test`)
-- `KIND_CONFIG`: Kind config file path (defaults to Kind's built-in config)
-
-## Architecture
-
-- **Controller**: Watches Pod events and reacts to the `tcpdump.antrea.io` annotation.
-- **ProcessManager**: Manages `tcpdump` processes using `nsenter` to access Pod network namespaces.
-- **Host Access**: Uses `hostPID: true` and mounts `/run/containerd/containerd.sock` to resolve container PIDs via `crictl`.
-
-## Security Posture
-
-The DaemonSet requires elevated privileges to perform packet capture across Pod network namespaces. The security configuration is explicit and minimal:
-
-### Required Permissions
-
-- **`hostPID: true`**: Access host process namespace to use `nsenter`
-- **`runAsUser: 0`**: Run as root (required for namespace operations)
-- **`NET_ADMIN`**: Capture network packets
-- **`NET_RAW`**: Access raw sockets for tcpdump
-- **`SYS_ADMIN`**: Enter container network namespaces via `nsenter`
-- **`SYS_PTRACE`**: Read container process information
-- **`DAC_READ_SEARCH`**: Access container filesystem paths
-
-### Mitigations
-
-- **`privileged: false`**: Avoid full privileged mode
-- **Drop ALL capabilities** first, then add only required ones
-- **Principle of least privilege**: Only capabilities strictly necessary for packet capture
-
-### Multi-Container Pod Policy
-
-When a Pod has multiple containers, the controller implements a deterministic selection policy: it always captures traffic from the **first container** (`spec.containers[0]`). This ensures predictable behavior and avoids ambiguity.
-
-## Important Notes
-
-### File Naming
-
-When using `tcpdump -W <N>`, tcpdump automatically appends numeric suffixes to capture files. For example, with `-w /capture-traffic-generator.pcap -W 5`, the files will be named:
-- `/capture-traffic-generator.pcap0`
-- `/capture-traffic-generator.pcap1`
-- `/capture-traffic-generator.pcap2`
-- etc.
-
-This is standard tcpdump behavior for file rotation.
-
 ## Deliverables
 
-This repository contains all required deliverables for the LFX Mentorship task:
+All required files in `deliverables/`:
+- `pod-describe.txt` - kubectl describe output
+- `pods.txt` - kubectl get pods -A output
+- `capture-files.txt` - ls output showing pcap files
+- `capture.pcap` - Extracted pcap file
+- `capture-output.txt` - tcpdump -r output
+- `cleanup-verification.txt` - Proof files are deleted
 
-1. **Go source code**: `cmd/` and `pkg/` directories
-2. **Dockerfile**: `Dockerfile` (uses ubuntu:24.04 base image)
-3. **Makefile**: `Makefile` for build automation
-4. **Capture DaemonSet manifest**: `deploy/daemonset.yaml` (includes RBAC)
-5. **Test Pod manifest**: `deploy/test-pod.yaml`
-6. **Pod describe output**: `deliverables/pod-describe.txt`
-7. **Pods listing**: `deliverables/pods.txt`
-8. **Capture files listing**: `deliverables/capture-files.txt`
-9. **Extracted pcap file**: `deliverables/capture.pcap`
-10. **Pcap text output**: `deliverables/capture-output.txt`
-11. **Cleanup verification**: `deliverables/cleanup-verification.txt`
+Source code in `cmd/` and `pkg/`. Manifests in `deploy/`.
 
 ## License
 
 MIT
-
