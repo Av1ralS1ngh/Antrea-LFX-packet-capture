@@ -206,27 +206,27 @@ func (c *Controller) syncPod(ctx context.Context, key string) error {
 	pod, err := c.podLister.Pods(namespace).Get(name)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
-			c.stopCapture(key)
+			c.stopCapture(key, true)
 			return nil
 		}
 		return err
 	}
 
 	if pod.Spec.NodeName != c.nodeName {
-		c.stopCapture(key)
+		c.stopCapture(key, true)
 		return nil
 	}
 
 	annoValue, hasAnno := pod.Annotations[annotationKey]
 	if !hasAnno {
-		c.stopCapture(key)
+		c.stopCapture(key, true)
 		return nil
 	}
 
 	maxFiles, err := parseMaxFiles(annoValue)
 	if err != nil {
 		klog.ErrorS(err, "Invalid annotation value", "pod", key, "annotation", annotationKey, "value", annoValue)
-		c.stopCapture(key)
+		c.stopCapture(key, true)
 		return nil
 	}
 
@@ -296,7 +296,7 @@ func (c *Controller) startCapture(ctx context.Context, key string, pod *corev1.P
 			"oldContainerID", existingCapture.containerID,
 			"newContainerID", containerID,
 			"processActive", c.processManager.HasCapture(key))
-		c.stopCapture(key)
+		c.stopCapture(key, false)
 	}
 
 	fileLocation := c.captureFileLocation(pod.Name)
@@ -325,7 +325,7 @@ func (c *Controller) onCaptureExit(key string) {
 	c.queue.Add(key)
 }
 
-func (c *Controller) stopCapture(podKey string) {
+func (c *Controller) stopCapture(podKey string, cleanup bool) {
 	c.mu.Lock()
 	state := c.activeCaptures[podKey]
 	if state != nil {
@@ -338,7 +338,9 @@ func (c *Controller) stopCapture(podKey string) {
 	}
 
 	c.processManager.StopCapture(podKey)
-	c.processManager.CleanupCaptureFilesForPod(state.filePattern)
+	if cleanup {
+		c.processManager.CleanupCaptureFilesForPod(state.filePattern)
+	}
 }
 
 func (c *Controller) captureFileLocation(podName string) string {

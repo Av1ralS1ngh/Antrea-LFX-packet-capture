@@ -147,7 +147,7 @@ func (pm *ProcessManager) doStartCapture(ctx context.Context, key, podName, cont
 	go func() {
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
-			klog.V(2).InfoS("tcpdump stderr", "pod", key, "msg", scanner.Text())
+			klog.InfoS("tcpdump stderr", "pod", key, "msg", scanner.Text())
 		}
 	}()
 
